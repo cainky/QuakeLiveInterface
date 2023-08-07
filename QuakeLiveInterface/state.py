@@ -1,5 +1,3 @@
-
-
 import struct
 
 class GameState:
@@ -8,19 +6,18 @@ class GameState:
         self.item_locations = {}
 
     def update(self, data_packet):
-        # TODO: Update unpacking based on Quake Live's packet structure.
-        
-        # first we need to unpack the binary data
-        # the format string will depend on the structure of the packet
-        # for this example, let's assume the packet begins with a player ID (an integer)
-        # followed by the player's x, y, and z coordinates (floats)
-        player_id, x, y, z = struct.unpack('ifff', data_packet[:16])
-
-        # update the player's position
+        # Unpacking player data
+        sequence, player_id, x, y, z = struct.unpack('iifff', data_packet[:20])
         self.player_positions[player_id] = (x, y, z)
 
-        # similar unpacking would be done for other information in the packet,
-        # such as item locations
+        # Assuming rest of the packet is all item data
+        item_data = data_packet[20:]
+        item_count = len(item_data) // 16  # Assuming each item occupies 16 bytes
+
+        for i in range(item_count):
+            offset = i * 16
+            item_id, x, y, z = struct.unpack('iifff', item_data[offset:offset+16])
+            self.item_locations[item_id] = (x, y, z)
 
     def get_player_position(self, player_id):
         return self.player_positions.get(player_id)

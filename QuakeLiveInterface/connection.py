@@ -1,5 +1,3 @@
-
-
 import logging
 import socket
 import time
@@ -13,7 +11,7 @@ class ServerConnection:
         self.host = host
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
+
     def listen(self, buffer_size=4096):
         """Listens for incoming data from the server."""
         try:
@@ -22,10 +20,10 @@ class ServerConnection:
         except Exception as e:
             logger.error(f"Error while listening: {e}")
             return None
-    
+
     def set_timeout(self, timeout):
         self.socket.settimeout(timeout)
-
+    
     def send_command(self, command: str):
         try:
             self.socket.sendto(command.encode(), (self.host, self.port))
@@ -42,6 +40,7 @@ class ServerConnection:
             except Exception as e:
                 logger.error(f"Failed to reconnect, attempt {i+1}/{retries}: {e}")
                 time.sleep(2)  # Wait before retrying
+
 
 class CommandIssuer:
     def __init__(self, connection: ServerConnection):
