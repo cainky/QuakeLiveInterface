@@ -68,7 +68,7 @@ class GameState:
         }
 
     def handle_game_state_update(self, data_packet: bytes):
-        _, player_id, health, machine_gun_ammo, shotgun_ammo, grenade_ammo, rocket_ammo, lightning_ammo, railgun_ammo, plasma_ammo, bfg_ammo = unpack('Biiiiiiiiiii', data_packet)
+        _, player_id, health, machine_gun_ammo, shotgun_ammo, grenade_ammo, rocket_ammo, lightning_ammo, railgun_ammo, plasma_ammo, bfg_ammo = struct.unpack('Biiiiiiiiiii', data_packet)
         self.player_health[player_id] = health
         self.player_ammo[player_id] = {
             "machine_gun": machine_gun_ammo,
