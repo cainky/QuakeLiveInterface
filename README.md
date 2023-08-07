@@ -22,7 +22,7 @@ To create a connection to a Quake Live server:
 
 ```python
 
-from quake_live_client import ServerConnection
+from QUakeLiveInterface.connection import ServerConnection
 
 connection = ServerConnection(server_ip, server_port)
 connection.connect()
@@ -39,7 +39,7 @@ To create a Quake Live client and interpret game state data:
 
 ```python
 
-from quake_live_client import QuakeLiveClient
+from QuakeLiveInterface.client import QuakeLiveClient
 
 client = QuakeLiveClient(server_ip, server_port)
 client.connect()
