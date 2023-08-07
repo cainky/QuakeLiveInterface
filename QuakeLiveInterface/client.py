@@ -1,5 +1,4 @@
-# file: QuakeLiveInterface/client.py
-
+import time
 from QuakeLiveInterface.connection import ServerConnection
 from QuakeLiveInterface.state import GameState
 
@@ -7,6 +6,11 @@ class QuakeLiveClient:
     def __init__(self, ip_address, port, rcon_password):
         self.connection = ServerConnection(ip_address, port, rcon_password)
         self.game_state = GameState()
+    
+    def send_command(self, command):
+        self.connection.send_command(command)
+        time.sleep(0.5)  # Giving some time for the server to process the command.
+        self.update_game_state()
 
     def connect(self):
         self.connection.connect()

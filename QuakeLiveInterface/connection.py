@@ -1,30 +1,65 @@
-# file: QuakeLiveInterface/connection.py
 
+
+import logging
 import socket
+import time
 
-BUFFER_SIZE = 4096
+logging.basicConfig(filename='quakelive_interface.log', level=logging.DEBUG, 
+                    format='%(asctime)s [%(levelname)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logger = logging.getLogger(__name__)
 
 class ServerConnection:
-    def __init__(self, ip_address: str, port: int, rcon_password: str):
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.server_address = (ip_address, port)
-        self.rcon_password = rcon_password
+    
+    def listen(self, buffer_size=4096):
+        """Listens for incoming data from the server."""
+        try:
+            data, _ = self.socket.recvfrom(buffer_size)
+            return data
+        except Exception as e:
+            logger.error(f"Error while listening: {e}")
+            return None
+    
+    def set_timeout(self, timeout):
+        self.socket.settimeout(timeout)
 
-    def connect(self):
-        self.socket.connect(self.server_address)
+    def send_command(self, command: str):
+        try:
+            self.socket.sendto(command.encode(), (self.host, self.port))
+            logger.info(f"Sent command: {command}")
+        except Exception as e:
+            logger.error(f"Error sending command: {command}. Error: {e}")
+    
+    def reconnect(self, retries=3):
+        for i in range(retries):
+            try:
+                self.socket.close()
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                return
+            except Exception as e:
+                logger.error(f"Failed to reconnect, attempt {i+1}/{retries}: {e}")
+                time.sleep(2)  # Wait before retrying
 
-    def disconnect(self):
-        self.socket.close()
+class CommandIssuer:
+    def __init__(self, connection: ServerConnection):
+        self.connection = connection
+        self.command_queue = []
+    
+    def queue_command(self, command):
+        self.command_queue.append(command)
+    
+    def issue_next_command(self):
+        if self.command_queue:
+            next_command = self.command_queue.pop(0)
+            self.connection.send_command(next_command)
 
-    def send_rcon_command(self, command: str):
-        # the format for rcon commands is "rcon [password] [command]"
-        rcon_command = f"rcon {self.rcon_password} {command}"
-        data = rcon_command.encode()
-
-        # Quake Live uses UDP, so we use sendto instead of send
-        self.socket.sendto(data, self.server_address)
-
-    def receive_response(self) -> str:
-        # you might need to adjust the buffer size
-        data = self.socket.recv(BUFFER_SIZE)
-        return data.decode()
+if __name__ == "__main__":
+    # For basic testing purposes
+    conn = ServerConnection('localhost', 27960)  # Example host and port
+    issuer = CommandIssuer(conn)
+    
+    issuer.queue_command("sample_command")
+    issuer.issue_next_command()

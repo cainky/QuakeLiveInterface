@@ -1,4 +1,4 @@
-# file: QuakeLiveInterface/state.py
+
 
 import struct
 
@@ -8,6 +8,8 @@ class GameState:
         self.item_locations = {}
 
     def update(self, data_packet):
+        # TODO: Update unpacking based on Quake Live's packet structure.
+        
         # first we need to unpack the binary data
         # the format string will depend on the structure of the packet
         # for this example, let's assume the packet begins with a player ID (an integer)
