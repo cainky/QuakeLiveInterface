@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 class ServerConnection:
     def __init__(self, host: str, port: int):
+        logger.info(f"Initializing connection to {host}:{port}")
         self.host = host
         self.port = port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

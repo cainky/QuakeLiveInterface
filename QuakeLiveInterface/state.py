@@ -13,6 +13,7 @@ class GameState:
 
     def __init__(self):
         self.player_positions = {}
+        self.item_locations = {}
         self.item_picked_by = {}
         self.player_ammo = {}
         self.player_health = {}
@@ -52,8 +53,9 @@ class GameState:
 
     def handle_item_pickup(self, data_packet: bytes):
         try:
-            _, item_id, player_id = struct.unpack('Bii', data_packet)
+            _, item_id, player_id, x, y, z = struct.unpack('Biiifff', data_packet)
             self.item_picked_by[item_id] = player_id
+            self.item_locations[item_id] = (x, y, z)
         except struct.error as e:
             raise ValueError("Invalid item pickup packet format") from e
 
@@ -61,7 +63,7 @@ class GameState:
         try:
             _, player_id, weapon_id, target_id, damage = struct.unpack('Biiii', data_packet)
             # Deduct damage from the targeted player
-            self.player_health[target_id] -= damage
+            self.player_health[target_id] = max(0, self.player_health.get(target_id, 100) - damage)
         except struct.error as e:
             raise ValueError("Invalid player shot packet format") from e
 
