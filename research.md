@@ -39,19 +39,6 @@
   - Implement functionality to parse Quake Live demo files.
   - This could be used to build a dataset for training the AI, or for replaying specific game scenarios.
 
-
-### Issuing Commands to the Quake Live Server Console
-
-There are several ways to issue commands to the Quake Live server console. One common approach is to use the Remote Console (rcon) feature, which is a protocol that allows remote execution of console commands. Here's a rough plan to implement this:
-
-  - Connect to the server: Connect to the Quake Live server by establishing a UDP socket connection. The server's IP address and port number will be required for this.
-  
-  - Authenticate: Send an rcon authentication request with the password. The authentication process is usually done by sending the string "rcon {password} {command}" to the server, where {password} is the rcon password and {command} is the command you want to execute.
-  
-  - Send Commands: Once authenticated, you can send any command by sending the string "rcon {password} {command}" to the server.
-  
-  - Receive Response: After sending a command, the server will respond with a UDP packet containing the response. You will need to parse this packet to get the console output.
-
 ### Interpreting Network Data
 
 Interpreting the network data sent between the Quake Live client and server will be a complex task because this data is likely to be binary and not easily human-readable. Here's a basic plan for how to go about it:
