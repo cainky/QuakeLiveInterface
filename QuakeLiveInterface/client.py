@@ -7,18 +7,30 @@ class QuakeLiveClient:
         self.game_state = GameState()
 
     def update_game_state(self):
-        data_packet = self.connection.listen()
-        if data_packet:
-            self.game_state.update(data_packet)
+        try:
+            data_packet = self.connection.listen()
+            if data_packet:
+                self.game_state.update(data_packet)
+        except Exception as e:
+            raise RuntimeError("Error while updating game state") from e
 
     def get_player_position(self, player_id):
-        return self.game_state.get_player_position(player_id)
+        try:
+            return self.game_state.get_player_position(player_id)
+        except Exception as e:
+            raise RuntimeError("Error while retrieving player position") from e
 
     def get_item_location(self, item_id):
-        return self.game_state.get_item_location(item_id)
+        try:
+            return self.game_state.get_item_location(item_id)
+        except Exception as e:
+            raise RuntimeError("Error while retrieving item location") from e
 
     def send_command(self, command):
-        self.connection.send_command(command)
+        try:
+            self.connection.send_command(command)
+        except Exception as e:
+            raise RuntimeError("Error while sending command") from e
 
     # Movement commands:
     def move_forward(self):
