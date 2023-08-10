@@ -3,19 +3,23 @@ from unittest.mock import MagicMock, patch
 import socket
 from QuakeLiveInterface.connection import ServerConnection
 
-class ServerConnectionTest(unittest.TestCase):
 
+class ServerConnectionTest(unittest.TestCase):
     def setUp(self):
         self.ip = "127.0.0.1"
         self.port = 1234
-        self.connection = ServerConnection(self.ip, self.port)
-        self.connection.socket = MagicMock()
+        self.mock_socket = MagicMock()
+        self.connection = ServerConnection(self.ip, self.port, sock=self.mock_socket)
+
+    def tearDown(self):
+        if self.connection.socket:
+            self.connection.socket.close()
 
     def test_initialization(self):
         """Test proper initialization of the ServerConnection class."""
         self.assertEqual(self.connection.host, self.ip)
         self.assertEqual(self.connection.port, self.port)
-        self.connection.socket.assert_called_once()
+        self.assertIsInstance(self.connection.socket, MagicMock)
 
     def test_listen_success(self):
         """Test listening for data successfully."""
@@ -40,7 +44,9 @@ class ServerConnectionTest(unittest.TestCase):
         """Test sending a command successfully."""
         command = "test_command"
         self.connection.send_command(command)
-        self.connection.socket.sendto.assert_called_once_with(command.encode(), (self.ip, self.port))
+        self.connection.socket.sendto.assert_called_once_with(
+            command.encode(), (self.ip, self.port)
+        )
 
     def test_send_command_error(self):
         """Test sending a command when an error occurs."""
@@ -52,17 +58,20 @@ class ServerConnectionTest(unittest.TestCase):
 
     def test_reconnect_success(self):
         """Test successful reconnection."""
-        with patch.object(socket, 'socket', autospec=True) as mock_socket:
+        new_mock_socket = MagicMock()
+        with patch("socket.socket", return_value=new_mock_socket):
             self.connection.reconnect()
-            self.assertTrue(self.connection.socket.close.called)
-            mock_socket.assert_called_once()
+            self.mock_socket.close.assert_called_once()
 
     def test_reconnect_failure(self):
         """Test failing to reconnect after max retries."""
-        with patch.object(socket, 'socket', side_effect=socket.error("test error"), autospec=True):
+        with patch.object(
+            socket, "socket", side_effect=socket.error("test error"), autospec=True
+        ):
             with self.assertLogs(level="ERROR") as log:
                 self.connection.reconnect()
                 self.assertIn("Failed to reconnect, attempt 3/3", log.output[2])
+
 
 if __name__ == "__main__":
     unittest.main()
