@@ -22,7 +22,7 @@ To create a connection to a Quake Live server:
 
 ```python
 
-from QUakeLiveInterface.connection import ServerConnection
+from QuakeLiveInterface.connection import ServerConnection
 
 connection = ServerConnection(server_ip, server_port)
 connection.connect()
