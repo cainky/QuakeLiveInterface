@@ -1,14 +1,13 @@
-import logging
 import socket
 import time
 
-logging.basicConfig(
-    filename="quakelive_interface.log",
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+from loguru import logger
+
+logger.add(
+    "quakelive_interface.log",
+    level="DEBUG",
+    format="{time:YYYY-MM-DD HH:mm:ss} [{level}] - {message}",
 )
-logger = logging.getLogger(__name__)
 
 
 class ServerConnection:

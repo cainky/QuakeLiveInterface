@@ -50,3 +50,9 @@ Interpreting the network data sent between the Quake Live client and server will
   - Parse Game State: Once you understand the networking protocol, you can start to parse the game state updates from the captured packets. This will likely involve reading and interpreting binary data.
 
   - Maintain Local Game State: As you parse the game state updates, you will need to maintain a local copy of the game state for the AI to use. This game state should be updated every time a new packet is received.
+
+
+### Resources
+- https://github.com/MinoMino/minqlx
+- https://github.com/mightycow/uberdemotools
+- https://github.com/quakelive-server-standards/quakelive-server-standards

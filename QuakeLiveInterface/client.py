@@ -1,8 +1,10 @@
+import math
 from QuakeLiveInterface.connection import ServerConnection
 from QuakeLiveInterface.state import GameState
+from QuakeLiveInterface.constants import WEAPONS
 
 class QuakeLiveClient:
-    def __init__(self, ip_address, port):
+    def __init__(self, ip_address: str, port: int):
         self.connection = ServerConnection(ip_address, port)
         self.game_state = GameState()
 
@@ -13,12 +15,10 @@ class QuakeLiveClient:
                 self.game_state.update(data_packet)
         except Exception as e:
             raise RuntimeError("Error while updating game state") from e
+    
+    def calculate_distance(self, pos1, pos2):
+        return math.sqrt(sum((p1 - p2) ** 2 for p1, p2 in zip(pos1, pos2)))
 
-    def get_player_position(self, player_id):
-        try:
-            return self.game_state.get_player_position(player_id)
-        except Exception as e:
-            raise RuntimeError("Error while retrieving player position") from e
 
     def get_item_location(self, item_id):
         try:
@@ -26,18 +26,25 @@ class QuakeLiveClient:
         except Exception as e:
             raise RuntimeError("Error while retrieving item location") from e
 
-    def send_command(self, command):
+    def send_command(self, command: str):
         try:
             self.connection.send_command(command)
         except Exception as e:
             raise RuntimeError("Error while sending command") from e
 
+    def switch_weapon(self, weapon_id: int):
+        if weapon_id in WEAPONS:
+            self.send_command(WEAPONS[weapon_id])
+
     # Movement commands:
+    def aim(self, pitch, yaw):
+        self.send_command(f"+mlook;cl_pitchspeed {pitch};cl_yawspeed {yaw}")
+
     def move_forward(self):
         self.send_command("+forward")
 
     def move_backward(self):
-        self.send_command("-forward")
+        self.send_command("+back")
 
     def move_left(self):
         self.send_command("+moveleft")
@@ -71,14 +78,11 @@ class QuakeLiveClient:
         self.send_command("weapprev")
 
     # Communication commands:
-    def say(self, message):
+    def say(self, message: str):
         self.send_command(f"say {message}")
 
-    def say_team(self, message):
+    def say_team(self, message: str):
         self.send_command(f"say_team {message}")
-
-    def voice_chat(self, voice_command):
-        self.send_command(f"voice_chat {voice_command}")
 
     # Miscellaneous:
     def toggle_console(self):
