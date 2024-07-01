@@ -53,6 +53,8 @@ Interpreting the network data sent between the Quake Live client and server will
 
 
 ### Resources
+- https://euere.eu/ql/
 - https://github.com/MinoMino/minqlx
+- https://github.com/mgaertne/shinqlx
 - https://github.com/mightycow/uberdemotools
 - https://github.com/quakelive-server-standards/quakelive-server-standards

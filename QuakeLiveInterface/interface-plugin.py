@@ -3,7 +3,15 @@ import json
 import threading
 import socket
 from typing import List, Callable, Any, Tuple
-from constants import CommandType, Direction, WeaponId, DEFAULT_PORT, STATE_REQUEST, COMMAND_PREFIX
+from utils import CommandType, Direction, WeaponId, DEFAULT_PORT, STATE_REQUEST, COMMAND_PREFIX
+
+from loguru import logger
+
+logger.add(
+    "quakelive_interface.log",
+    level="DEBUG",
+    format="{time:YYYY-MM-DD HH:mm:ss} [{level}] - {message}",
+)
 
 class Player:
     def __init__(self, id: int, name: str, team: str, position: Tuple[float, float, float, float, float, float],
