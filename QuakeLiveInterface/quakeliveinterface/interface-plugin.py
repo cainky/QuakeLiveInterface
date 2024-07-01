@@ -3,7 +3,7 @@ import json
 import threading
 import socket
 from typing import List, Callable, Any, Tuple
-from utils import CommandType, Direction, WeaponId, DEFAULT_PORT, STATE_REQUEST, COMMAND_PREFIX
+from quakeliveinterface.utils import CommandType, Direction, WeaponId, DEFAULT_PORT, STATE_REQUEST, COMMAND_PREFIX
 
 from loguru import logger
 
