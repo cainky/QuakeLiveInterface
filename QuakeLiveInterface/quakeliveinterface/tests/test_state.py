@@ -1,5 +1,5 @@
 import unittest
-from QuakeLiveInterface.state import GameState, PacketType, PACKET_FORMATS
+from QuakeLiveInterface.state.game_state import GameState, PacketType, PACKET_FORMATS
 import struct
 
 

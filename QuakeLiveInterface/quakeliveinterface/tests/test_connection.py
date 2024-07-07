@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 import socket
-from QuakeLiveInterface.connection import ServerConnection
+from QuakeLiveInterface.quakeliveinterface.connection import ServerConnection
 
 
 class ServerConnectionTest(unittest.TestCase):

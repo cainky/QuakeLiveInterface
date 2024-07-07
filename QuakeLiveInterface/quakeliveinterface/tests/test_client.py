@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
-from QuakeLiveInterface.client import QuakeLiveClient
+from QuakeLiveInterface.quakeliveinterface.client import QuakeLiveClient
 
 
 class QuakeLiveClientTest(unittest.TestCase):

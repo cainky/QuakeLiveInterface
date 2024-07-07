@@ -1,7 +1,7 @@
 import math
-from QuakeLiveInterface.connection import ServerConnection
-from QuakeLiveInterface.state import GameState
-from QuakeLiveInterface.constants import WEAPONS
+from QuakeLiveInterface.quakeliveinterface.connection import ServerConnection
+from QuakeLiveInterface.state.game_state import GameState
+from QuakeLiveInterface.utils.constants import WEAPONS
 
 class QuakeLiveClient:
     def __init__(self, ip_address: str, port: int):
