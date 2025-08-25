@@ -9,10 +9,13 @@ packages = [{include = "QuakeLiveInterface"}]
 [tool.poetry.dependencies]
 python = "^3.9"
 redis = "^4.3.4"
+numpy = "^1.23.5"
+gymnasium = "^0.26.3"
 
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"
+pytest-mock = "^3.11.1"
 
 [build-system]
 requires = ["poetry-core"]

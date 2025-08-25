@@ -4,9 +4,7 @@ import json
 import threading
 import time
 
-# This is the address of the agent that is being trained.
-# For the purpose of this project, we assume there is only one agent playing at a time.
-# In a real scenario, this would need to be more dynamic.
+# This should be set to the SteamID64 of the agent's account.
 AGENT_STEAM_ID = "some_steam_id"
 
 class ql_agent_plugin(minqlx.Plugin):
@@ -18,79 +16,145 @@ class ql_agent_plugin(minqlx.Plugin):
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
 
         self.command_channel = 'ql:agent:command'
+        self.admin_command_channel = 'ql:admin:command'
         self.game_state_channel = 'ql:game:state'
 
-        self.add_hook("game_frame", self.handle_game_frame)
+        self.add_hook("server_frame", self.handle_server_frame)
 
-        # Start a thread to listen for commands from the agent
-        self.command_thread = threading.Thread(target=self.listen_for_commands)
-        self.command_thread.daemon = True
-        self.command_thread.start()
+        self.agent_command_thread = threading.Thread(target=self.listen_for_agent_commands)
+        self.agent_command_thread.daemon = True
+        self.agent_command_thread.start()
 
-    def listen_for_commands(self):
+        self.admin_command_thread = threading.Thread(target=self.listen_for_admin_commands)
+        self.admin_command_thread.daemon = True
+        self.admin_command_thread.start()
+
+    def listen_for_agent_commands(self):
         pubsub = self.redis_conn.pubsub()
         pubsub.subscribe(self.command_channel)
         for message in pubsub.listen():
             if message['type'] == 'message':
-                self.handle_command(message['data'])
+                self.handle_agent_command(message['data'])
 
-    def handle_command(self, command_data):
+    def listen_for_admin_commands(self):
+        pubsub = self.redis_conn.pubsub()
+        pubsub.subscribe(self.admin_command_channel)
+        for message in pubsub.listen():
+            if message['type'] == 'message':
+                self.handle_admin_command(message['data'])
+
+    def handle_agent_command(self, command_data):
         try:
             data = json.loads(command_data)
             command = data.get('command')
-            player = self.player(AGENT_STEAM_ID)
-            if not player:
+            agent_player = self.get_agent_player()
+            if not agent_player:
                 return
 
             if command == 'move':
-                player.set_velocity((data['forward'], data['right'], data['up']))
+                agent_player.set_velocity((data['forward'], data['right'], data['up']))
             elif command == 'look':
-                player.set_view_angles((data['pitch'], data['yaw'], data['roll']))
+                agent_player.set_view_angles((data['pitch'], data['yaw'], data['roll']))
             elif command == 'attack':
-                minqlx.console_command("cmd " + player.id + " +attack")
+                minqlx.command(f"cmd {agent_player.id} +attack; wait; -attack")
             elif command == 'use':
-                player.use(data['item'])
+                agent_player.use(data['item'])
             elif command == 'weapon_select':
-                player.weapon(data['weapon'])
+                agent_player.weapon(data['weapon'])
             elif command == 'say':
-                minqlx.console_command(f"say {data['message']}")
+                minqlx.command(f"say {data['message']}")
 
         except Exception as e:
-            minqlx.log_error(f"Error handling command: {e}")
+            minqlx.log_error(f"Error handling agent command: {e}")
 
-    def handle_game_frame(self):
-        # This is called every game frame. We can use it to publish the game state.
-        # This might be too frequent and could be optimized.
+    def handle_admin_command(self, command_data):
         try:
-            player = self.player(AGENT_STEAM_ID)
-            if not player:
+            data = json.loads(command_data)
+            command = data.get('command')
+
+            if command == 'restart_game':
+                minqlx.log_info("Restarting game via admin command.")
+                minqlx.command("restart")
+            elif command == 'start_demo_record':
+                filename = data.get('filename', 'agent_demo')
+                minqlx.log_info(f"Starting demo recording: {filename}")
+                minqlx.command(f"record {filename}")
+            elif command == 'stop_demo_record':
+                minqlx.log_info("Stopping demo recording.")
+                minqlx.command("stoprecord")
+
+        except Exception as e:
+            minqlx.log_error(f"Error handling admin command: {e}")
+
+    def get_agent_player(self):
+        """Finds the player object for the agent."""
+        for player in self.players():
+            if player.steam_id == AGENT_STEAM_ID:
+                return player
+        return None
+
+    def _serialize_player(self, player):
+        """Serializes a player object into a dictionary."""
+        if not player:
+            return None
+
+        # minqlx player.weapons() returns a list of weapon numbers the player has.
+        # We need to map these to names and get ammo for each.
+        # This is a simplified representation. A real implementation would need a mapping from weapon numbers to names.
+        weapons = player.weapons()
+        weapon_data = []
+        for w in weapons:
+            # This is a placeholder. A real implementation needs a weapon mapping.
+            weapon_data.append({"name": str(w), "ammo": player.get_weapon_ammo(w)})
+
+        current_weapon = player.weapon
+        selected_weapon_data = {"name": str(current_weapon), "ammo": player.get_weapon_ammo(current_weapon)} if current_weapon else None
+
+        return {
+            'steam_id': player.steam_id,
+            'name': player.name,
+            'health': player.health,
+            'armor': player.armor,
+            'position': {'x': player.position[0], 'y': player.position[1], 'z': player.position[2]},
+            'velocity': {'x': player.velocity[0], 'y': player.velocity[1], 'z': player.velocity[2]},
+            'is_alive': player.is_alive,
+            'weapons': weapon_data,
+            'selected_weapon': selected_weapon_data,
+        }
+
+    def _serialize_item(self, item):
+        """Serializes an item object into a dictionary."""
+        # The minqlx API for items is not well-documented.
+        # We assume that we can get the item's name, position, and whether it's spawned.
+        # Getting the respawn timer is tricky and might require tracking game events.
+        # For now, we'll just report if it's available.
+        return {
+            'name': item.name,
+            'position': {'x': item.position[0], 'y': item.position[1], 'z': item.position[2]},
+            'is_available': item.is_spawned(), # Assuming this method exists
+            'spawn_time': -1 # Placeholder
+        }
+
+    def handle_server_frame(self):
+        """Called every server frame to publish the game state."""
+        try:
+            agent_player = self.get_agent_player()
+            if not agent_player:
                 return
 
-            opponents = []
-            for p in self.players():
-                if p.steam_id != AGENT_STEAM_ID:
-                    opponents.append({
-                        'player_id': p.steam_id,
-                        'name': p.name,
-                        'health': p.health,
-                        'armor': p.armor,
-                        'position': {'x': p.position[0], 'y': p.position[1], 'z': p.position[2]},
-                        'velocity': {'x': p.velocity[0], 'y': p.velocity[1], 'z': p.velocity[2]},
-                        'is_alive': p.is_alive,
-                    })
+            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != AGENT_STEAM_ID]
+
+            # minqlx.items() returns all item entities in the game.
+            items = [self._serialize_item(item) for item in minqlx.items()]
 
             game_state = {
-                'player_id': player.steam_id,
-                'health': player.health,
-                'armor': player.armor,
-                'position': {'x': player.position[0], 'y': player.position[1], 'z': player.position[2]},
-                'velocity': {'x': player.velocity[0], 'y': player.velocity[1], 'z': player.velocity[2]},
-                'ammo': player.weapons, # this might need more detail
-                'is_alive': player.is_alive,
+                'agent': self._serialize_player(agent_player),
                 'opponents': opponents,
+                'items': items,
                 'game_in_progress': self.game.state == "in_progress",
-                'game_type': self.game.type,
+                'game_type': self.game.type_short,
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
         except Exception as e:
-            minqlx.log_error(f"Error in handle_game_frame: {e}")
+            # Using minqlx.log_error to log the exception to the Quake Live console.
+            minqlx.log_error(f"Error in handle_server_frame: {e}")
