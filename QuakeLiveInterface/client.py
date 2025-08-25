@@ -1,94 +1,66 @@
-from QuakeLiveInterface.connection import ServerConnection
+import json
+import logging
+from QuakeLiveInterface.connection import RedisConnection
 from QuakeLiveInterface.state import GameState
 
+logger = logging.getLogger(__name__)
+
+
 class QuakeLiveClient:
-    def __init__(self, ip_address, port):
-        self.connection = ServerConnection(ip_address, port)
+    """
+    The main client for interacting with the Quake Live server via minqlx and Redis.
+    """
+
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0):
+        self.connection = RedisConnection(redis_host, redis_port, redis_db)
         self.game_state = GameState()
+        self.command_channel = 'ql:agent:command'
+        self.game_state_channel = 'ql:game:state'
+        self.game_state_pubsub = self.connection.subscribe(self.game_state_channel)
 
     def update_game_state(self):
-        try:
-            data_packet = self.connection.listen()
-            if data_packet:
-                self.game_state.update(data_packet)
-        except Exception as e:
-            raise RuntimeError("Error while updating game state") from e
+        """
+        Checks for a new game state message from Redis and updates the local game state.
+        """
+        message = self.connection.get_message(self.game_state_pubsub)
+        if message:
+            self.game_state.update_from_redis(message)
+            return True
+        return False
 
-    def get_player_position(self, player_id):
-        try:
-            return self.game_state.get_player_position(player_id)
-        except Exception as e:
-            raise RuntimeError("Error while retrieving player position") from e
-
-    def get_item_location(self, item_id):
-        try:
-            return self.game_state.get_item_location(item_id)
-        except Exception as e:
-            raise RuntimeError("Error while retrieving item location") from e
-
-    def send_command(self, command):
-        try:
-            self.connection.send_command(command)
-        except Exception as e:
-            raise RuntimeError("Error while sending command") from e
+    def send_command(self, command, args=None):
+        """
+        Sends a command to the minqlx plugin via Redis.
+        Args:
+            command: The command to send.
+            args: A dictionary of arguments for the command.
+        """
+        payload = {'command': command}
+        if args:
+            payload.update(args)
+        self.connection.publish(self.command_channel, json.dumps(payload))
 
     # Movement commands:
-    def move_forward(self):
-        self.send_command("+forward")
+    def move(self, forward, right, up):
+        self.send_command('move', {'forward': forward, 'right': right, 'up': up})
 
-    def move_backward(self):
-        self.send_command("-forward")
-
-    def move_left(self):
-        self.send_command("+moveleft")
-
-    def move_right(self):
-        self.send_command("+moveright")
-
-    def jump(self):
-        self.send_command("+jump")
-
-    def crouch(self):
-        self.send_command("+crouch")
+    def look(self, pitch, yaw, roll):
+        self.send_command('look', {'pitch': pitch, 'yaw': yaw, 'roll': roll})
 
     # Combat commands:
-    def shoot(self):
-        self.send_command("+attack")
+    def attack(self):
+        self.send_command('attack')
 
-    def stop_shoot(self):
-        self.send_command("-attack")
+    def use_item(self, item_name):
+        self.send_command('use', {'item': item_name})
 
-    def use_item(self):
-        self.send_command("+useitem")
-
-    def reload_weapon(self):
-        self.send_command("+reload")
-
-    def next_weapon(self):
-        self.send_command("weapnext")
-
-    def prev_weapon(self):
-        self.send_command("weapprev")
+    def select_weapon(self, weapon_name):
+        self.send_command('weapon_select', {'weapon': weapon_name})
 
     # Communication commands:
     def say(self, message):
-        self.send_command(f"say {message}")
+        self.send_command('say', {'message': message})
 
-    def say_team(self, message):
-        self.send_command(f"say_team {message}")
-
-    def voice_chat(self, voice_command):
-        self.send_command(f"voice_chat {voice_command}")
-
-    # Miscellaneous:
-    def toggle_console(self):
-        self.send_command("toggleconsole")
-
-    def screenshot(self):
-        self.send_command("screenshot")
-
-    def record_demo(self, demo_name):
-        self.send_command(f"record {demo_name}")
-
-    def stop_demo(self):
-        self.send_command("stoprecord")
+    # Other getters
+    def get_game_state(self):
+        return self.game_state

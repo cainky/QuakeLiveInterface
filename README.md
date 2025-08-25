@@ -1,12 +1,15 @@
 # QuakeLiveInterface
 
-Quake Live Interface is a Python library designed to provide a programmatic interface to a Quake Live game server. The library's main components are:
+Quake Live Interface is a Python library designed to provide a programmatic interface to a Quake Live game server for the purpose of training an AI agent. This project uses [minqlx](https://github.com/MinoMino/minqlx) to interface with the Quake Live server.
 
-- `ServerConnection`: A class that manages the TCP/IP connection to the Quake Live server. It sends commands to the server and receives data packets from the server.
+## Architecture
 
-- `GameState`: A class that parses the data packets from the server into a more accessible format. The game state includes information about the player's position, the positions of other entities, and other game state information.
+The system consists of three main components:
+1.  A **Quake Live Dedicated Server** with the `minqlx` modification installed.
+2.  A **`minqlx` Python plugin** (`ql_agent_plugin.py`) that runs on the server. This plugin extracts game state information and sends it to a Redis server. It also listens for commands from the client on a Redis channel.
+3.  A **Python client** (`QuakeLiveClient`) that connects to the Redis server to receive game state information and send commands to the agent.
 
-- `QuakeLiveClient`: A class that encapsulates the connection to the server and the interpretation of game state data. It provides an intuitive interface for users to interact with the game.
+This architecture allows for a clean separation of concerns and a robust way to control and monitor the game state for an AI agent.
 
 ## Installation
 
@@ -16,37 +19,45 @@ The project uses Poetry for package management.
 $ poetry install
 ```
 
-### Usage
+You will also need a running Redis server.
 
-To create a connection to a Quake Live server:
+## Setup
 
-```python
+1.  **Set up a Quake Live dedicated server.** Follow the official instructions to get a server running.
+2.  **Install `minqlx` on your server.** Follow the instructions on the [minqlx GitHub page](https://github.com/MinoMino/minqlx).
+3.  **Install the `ql_agent_plugin.py` plugin.**
+    - Copy the `minqlx-plugin/ql_agent_plugin.py` file to your `minqlx-plugins` directory on the server.
+    - Add `ql_agent_plugin` to your `qlx_plugins` cvar in your server configuration.
+    - Set the `AGENT_STEAM_ID` in `ql_agent_plugin.py` to the SteamID64 of the account that will be used by the AI agent.
 
-from QuakeLiveInterface.connection import ServerConnection
+## Usage
 
-connection = ServerConnection(server_ip, server_port)
-connection.connect()
-```
-
-To send a command to the server:
-
-```python
-
-connection.send_command("some_command")
-```
-
-To create a Quake Live client and interpret game state data:
+To create a connection to the Quake Live server and control the agent:
 
 ```python
-
 from QuakeLiveInterface.client import QuakeLiveClient
+import time
 
-client = QuakeLiveClient(server_ip, server_port)
-client.connect()
-game_state = client.get_game_state()
+# Initialize the client
+client = QuakeLiveClient()
+
+# Main loop
+while True:
+    # Update the game state from Redis
+    if client.update_game_state():
+        game_state = client.get_game_state()
+
+        # Print some info
+        print(f"Health: {game_state.get_player_health()}, Armor: {game_state.get_player_armor()}")
+        print(f"Position: {game_state.get_player_position()}")
+
+        # Example: make the agent jump
+        client.move(0, 0, 1)
+
+    time.sleep(0.1)
 ```
 
-### Testing
+## Testing
 
 To run tests:
 

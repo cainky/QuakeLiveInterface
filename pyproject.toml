@@ -4,10 +4,15 @@ version = "0.1.0"
 description = ""
 authors = ["cainky <kylecain.me@gmail.com>"]
 readme = "README.md"
+packages = [{include = "QuakeLiveInterface"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
+redis = "^4.3.4"
 
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
 
 [build-system]
 requires = ["poetry-core"]
