@@ -1,69 +1,66 @@
-import unittest
+import pytest
 from unittest.mock import MagicMock
 from QuakeLiveInterface.client import QuakeLiveClient
 
+@pytest.fixture
+def mock_redis_connection(mocker):
+    """Mocks the RedisConnection class."""
+    mock = MagicMock()
+    mocker.patch('QuakeLiveInterface.client.RedisConnection', return_value=mock)
+    return mock
 
-class QuakeLiveClientTest(unittest.TestCase):
-    def setUp(self):
-        self.client = QuakeLiveClient("127.0.0.1", 1234)
-        if self.client.connection.socket:
-            self.client.connection.socket.close()
-        self.client.connection.socket = MagicMock()
+def test_send_agent_command(mock_redis_connection):
+    """Tests that agent commands are sent to the correct channel."""
+    client = QuakeLiveClient()
+    client.send_agent_command('attack')
 
-    def send_command_test_helper(self, method, expected_command):
-        method()
-        self.assertEqual(
-            self.client.connection.socket.sendto.call_args[0][0].decode(),
-            expected_command,
-        )
+    mock_redis_connection.publish.assert_called_with('ql:agent:command', '{"command": "attack"}')
 
-    def test_commands(self):
-        commands = [
-            (self.client.crouch, "+crouch"),
-            (self.client.jump, "+jump"),
-            (self.client.move_backward, "-forward"),
-            (self.client.move_forward, "+forward"),
-            (self.client.move_left, "+moveleft"),
-            (self.client.move_right, "+moveright"),
-            (self.client.next_weapon, "weapnext"),
-            (self.client.prev_weapon, "weapprev"),
-            (self.client.reload_weapon, "+reload"),
-            (self.client.screenshot, "screenshot"),
-            (self.client.shoot, "+attack"),
-            (self.client.stop_demo, "stoprecord"),
-            (self.client.stop_shoot, "-attack"),
-            (self.client.toggle_console, "toggleconsole"),
-            (self.client.use_item, "+useitem"),
-        ]
+def test_send_admin_command(mock_redis_connection):
+    """Tests that admin commands are sent to the correct channel."""
+    client = QuakeLiveClient()
+    client.send_admin_command('restart_game')
 
-        for method, command in commands:
-            with self.subTest(method=method):
-                self.send_command_test_helper(method, command)
+    mock_redis_connection.publish.assert_called_with('ql:admin:command', '{"command": "restart_game"}')
 
-    def test_record_demo(self):
-        demo_name = "test_demo"
-        self.send_command_test_helper(
-            lambda: self.client.record_demo(demo_name), f"record {demo_name}"
-        )
+def test_move_command(mock_redis_connection):
+    """Tests the move command."""
+    client = QuakeLiveClient()
+    client.move(1, -1, 0)
 
-    def test_say(self):
-        message = "Hello, world!"
-        self.send_command_test_helper(
-            lambda: self.client.say(message), f"say {message}"
-        )
+    mock_redis_connection.publish.assert_called_with(
+        'ql:agent:command',
+        '{"command": "move", "forward": 1, "right": -1, "up": 0}'
+    )
 
-    def test_say_team(self):
-        message = "Hello, team!"
-        self.send_command_test_helper(
-            lambda: self.client.say_team(message), f"say_team {message}"
-        )
+def test_start_demo_recording(mock_redis_connection):
+    """Tests starting a demo recording."""
+    client = QuakeLiveClient()
+    client.start_demo_recording('my_demo')
 
-    def test_voice_chat(self):
-        voice_command = "test_command"
-        self.send_command_test_helper(
-            lambda: self.client.voice_chat(voice_command), f"voice_chat {voice_command}"
-        )
+    mock_redis_connection.publish.assert_called_with(
+        'ql:admin:command',
+        '{"command": "start_demo_record", "filename": "my_demo"}'
+    )
 
+def test_stop_demo_recording(mock_redis_connection):
+    """Tests stopping a demo recording."""
+    client = QuakeLiveClient()
+    client.stop_demo_recording()
 
-if __name__ == "__main__":
-    unittest.main()
+    mock_redis_connection.publish.assert_called_with(
+        'ql:admin:command',
+        '{"command": "stop_demo_record"}'
+    )
+
+def test_update_game_state(mock_redis_connection):
+    """Tests updating the game state."""
+    client = QuakeLiveClient()
+
+    # Mock the get_message to return a sample state
+    mock_redis_connection.get_message.return_value = '{"game_in_progress": true}'
+
+    updated = client.update_game_state()
+
+    assert updated
+    assert client.get_game_state().game_in_progress

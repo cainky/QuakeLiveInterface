@@ -1,143 +1,116 @@
-import struct
-from enum import Enum
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-class PacketType(Enum):
-    PLAYER_MOVEMENT = 1
-    ITEM_PICKUP = 2
-    PLAYER_SHOT = 3
-    PLAYER_DEATH = 4
-    GAME_STATE_UPDATE = 5
+class Player:
+    """Represents a player in the game."""
+    def __init__(self, steam_id, name, health, armor, position, velocity, is_alive, weapons, selected_weapon):
+        self.steam_id = steam_id
+        self.name = name
+        self.health = health
+        self.armor = armor
+        self.position = position
+        self.velocity = velocity
+        self.is_alive = is_alive
+        self.weapons = weapons
+        self.selected_weapon = selected_weapon
 
 
-PACKET_FORMATS = {
-    PacketType.PLAYER_MOVEMENT: "Bifff",
-    PacketType.ITEM_PICKUP: "Biifff",
-    PacketType.PLAYER_SHOT: "Biiii",
-    PacketType.PLAYER_DEATH: "Biii",
-    PacketType.GAME_STATE_UPDATE: "Biiiiiiiiii",
-}
+class Weapon:
+    """Represents a weapon in the game."""
+    def __init__(self, name, ammo):
+        self.name = name
+        self.ammo = ammo
+
+
+class Item:
+    """Represents an item on the map."""
+    def __init__(self, name, position, spawn_time, is_available):
+        self.name = name
+        self.position = position
+        self.spawn_time = spawn_time
+        self.is_available = is_available
 
 
 class GameState:
+    """
+    Represents the state of the game at a particular moment.
+    This class is updated from data received from the minqlx plugin via Redis.
+    """
+
     def __init__(self):
-        self.player_positions = {}
-        self.item_locations = {}
-        self.item_picked_by = {}
-        self.player_ammo = {}
-        self.player_health = {}
+        self.agent = None
+        self.opponents = []
+        self.items = []
+        self.game_in_progress = False
+        self.game_type = None
+        self.map_geometry = None  # This will be loaded once per map
 
-    def get_packet_type(self, data_packet: bytes) -> PacketType:
+    def update_from_redis(self, redis_data: str):
+        """
+        Updates the game state from a JSON string received from Redis.
+        Args:
+            redis_data: A JSON string containing the game state.
+        """
         try:
-            header = struct.unpack("B", data_packet[:1])[0]  # Extract the header byte
-            return PacketType(header)
-        except struct.error as e:
-            raise ValueError("Invalid data packet format") from e
+            data = json.loads(redis_data)
 
-    def update(self, data_packet: bytes):
-        try:
-            packet_type = self.get_packet_type(data_packet)
-            if packet_type == PacketType.PLAYER_MOVEMENT:
-                self.handle_player_movement(data_packet)
-            elif packet_type == PacketType.ITEM_PICKUP:
-                self.handle_item_pickup(data_packet)
-            elif packet_type == PacketType.PLAYER_SHOT:
-                self.handle_player_shot(data_packet)
-            elif packet_type == PacketType.PLAYER_DEATH:
-                self.handle_player_death(data_packet)
-            elif packet_type == PacketType.GAME_STATE_UPDATE:
-                self.handle_game_state_update(data_packet)
-            else:
-                raise ValueError("Invalid packet type")
-        except Exception as e:
-            raise RuntimeError("Error while updating game state") from e
+            # Update agent state
+            agent_data = data.get('agent')
+            if agent_data:
+                self.agent = self._create_player_from_data(agent_data)
 
-    def handle_player_movement(self, data_packet: bytes):
-        try:
-            _, player_id, x, y, z = struct.unpack(
-                PACKET_FORMATS[PacketType.PLAYER_MOVEMENT], data_packet
-            )
-            self.player_positions[player_id] = (x, y, z)
-        except struct.error as e:
-            raise ValueError("Invalid player movement packet format") from e
+            # Update opponents
+            self.opponents = [self._create_player_from_data(p) for p in data.get('opponents', [])]
 
-    def handle_item_pickup(self, data_packet: bytes):
-        try:
-            _, item_id, player_id, x, y, z = struct.unpack(
-                PACKET_FORMATS[PacketType.ITEM_PICKUP], data_packet
-            )
-            self.item_picked_by[item_id] = player_id
-            self.item_locations[item_id] = (x, y, z)
-        except struct.error as e:
-            raise ValueError("Invalid item pickup packet format") from e
+            # Update items
+            self.items = [self._create_item_from_data(i) for i in data.get('items', [])]
 
-    def handle_player_shot(self, data_packet: bytes):
-        try:
-            _, player_id, weapon_id, target_id, damage = struct.unpack(
-                PACKET_FORMATS[PacketType.PLAYER_SHOT], data_packet
-            )
-            # Deduct damage from the targeted player
-            self.player_health[target_id] = max(
-                0, self.player_health.get(target_id, 100) - damage
-            )
-        except struct.error as e:
-            raise ValueError("Invalid player shot packet format") from e
+            self.game_in_progress = data.get('game_in_progress')
+            self.game_type = data.get('game_type')
 
-    def handle_player_death(self, data_packet: bytes):
-        try:
-            _, player_id, killer_id, weapon_id = struct.unpack(
-                PACKET_FORMATS[PacketType.PLAYER_DEATH], data_packet
-            )
-            # Reset the player's game state after death
-            self.player_health[player_id] = 100  # Reset to default health
-            self.player_ammo[player_id] = self.default_ammo_count()
-        except struct.error as e:
-            raise ValueError("Invalid player death packet format") from e
+            # Map geometry is loaded separately
+            if 'map_geometry' in data:
+                self.map_geometry = data.get('map_geometry')
 
-    def default_ammo_count(self):
-        return {
-            "gauntlet": 0,  # Melee weapon, so no ammo
-            "machine_gun": 50,
-            "shotgun": 0,
-            "grenade_launcher": 0,
-            "rocket_launcher": 0,
-            "lightning_gun": 0,
-            "railgun": 0,
-            "plasma_gun": 0,
-            "bfg": 0,
-        }
+            logger.debug("Game state updated from Redis data.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON from Redis: {e}")
+            raise
+        except KeyError as e:
+            logger.error(f"Missing key in game state data from Redis: {e}")
+            raise
 
-    def handle_game_state_update(self, data_packet: bytes):
-        try:
-            (
-                _,
-                player_id,
-                health,
-                machine_gun_ammo,
-                shotgun_ammo,
-                grenade_ammo,
-                rocket_ammo,
-                lightning_ammo,
-                railgun_ammo,
-                plasma_ammo,
-                bfg_ammo,
-            ) = struct.unpack(PACKET_FORMATS[PacketType.GAME_STATE_UPDATE], data_packet)
-            self.player_health[player_id] = health
-            self.player_ammo[player_id] = {
-                "machine_gun": machine_gun_ammo,
-                "shotgun": shotgun_ammo,
-                "grenade_launcher": grenade_ammo,
-                "rocket_launcher": rocket_ammo,
-                "lightning_gun": lightning_ammo,
-                "railgun": railgun_ammo,
-                "plasma_gun": plasma_ammo,
-                "bfg": bfg_ammo,
-            }
-        except struct.error as e:
-            raise ValueError("Invalid game state update packet format") from e
+    def _create_player_from_data(self, player_data):
+        weapons = [Weapon(w['name'], w['ammo']) for w in player_data.get('weapons', [])]
+        selected_weapon = Weapon(player_data['selected_weapon']['name'], player_data['selected_weapon']['ammo']) if player_data.get('selected_weapon') else None
+        return Player(
+            steam_id=player_data.get('steam_id'),
+            name=player_data.get('name'),
+            health=player_data.get('health'),
+            armor=player_data.get('armor'),
+            position=player_data.get('position'),
+            velocity=player_data.get('velocity'),
+            is_alive=player_data.get('is_alive'),
+            weapons=weapons,
+            selected_weapon=selected_weapon
+        )
 
-    def get_player_position(self, player_id):
-        return self.player_positions.get(player_id)
+    def _create_item_from_data(self, item_data):
+        return Item(
+            name=item_data.get('name'),
+            position=item_data.get('position'),
+            spawn_time=item_data.get('spawn_time'),
+            is_available=item_data.get('is_available')
+        )
 
-    def get_item_location(self, item_id):
-        return self.item_locations.get(item_id)
+    def get_agent(self):
+        return self.agent
+
+    def get_opponents(self):
+        return self.opponents
+
+    def get_items(self):
+        return self.items

@@ -1,12 +1,21 @@
 # QuakeLiveInterface
 
-Quake Live Interface is a Python library designed to provide a programmatic interface to a Quake Live game server. The library's main components are:
+QuakeLiveInterface is a Python library designed to provide a comprehensive, object-oriented interface to a Quake Live game server for the purpose of training reinforcement learning agents. It uses [minqlx](https://github.com/MinoMino/minqlx) to interface with the Quake Live server and is designed to be compatible with [Gymnasium](https://gymnasium.farama.org/).
 
-- `ServerConnection`: A class that manages the TCP/IP connection to the Quake Live server. It sends commands to the server and receives data packets from the server.
+## Features
 
-- `GameState`: A class that parses the data packets from the server into a more accessible format. The game state includes information about the player's position, the positions of other entities, and other game state information.
+*   **Gymnasium-Compatible Environment**: A `QuakeLiveEnv` class that provides a standard interface for RL agents (`step`, `reset`).
+*   **Object-Oriented Game State**: A detailed and structured representation of the game state, including players, items, and weapons.
+*   **Flexible Reward System**: A customizable reward system that can be configured to encourage different behaviors.
+*   **Replay Analysis**: Integration with [UberDemoTools](https://github.com/mightycow/uberdemotools) to record and parse game demos for offline analysis and imitation learning.
+*   **Performance Tracking**: A built-in system to track and log key performance metrics like K/D ratio, damage, and accuracy.
 
-- `QuakeLiveClient`: A class that encapsulates the connection to the server and the interpretation of game state data. It provides an intuitive interface for users to interact with the game.
+## Architecture
+
+The system consists of three main components:
+1.  A **Quake Live Dedicated Server** with the `minqlx` modification installed.
+2.  A **`minqlx` Python plugin** (`ql_agent_plugin.py`) that runs on the server. This plugin extracts game state, sends it to a Redis server, and listens for commands.
+3.  A **Python client library** that provides the `QuakeLiveEnv` for the agent to interact with the game.
 
 ## Installation
 
@@ -16,37 +25,64 @@ The project uses Poetry for package management.
 $ poetry install
 ```
 
-### Usage
+You will also need a running Redis server and, for replay analysis, the [UberDemoTools](https://github.com/mightycow/uberdemotools) command-line tools in your system's PATH.
 
-To create a connection to a Quake Live server:
+## Setup
 
-```python
+1.  **Set up a Quake Live dedicated server.**
+2.  **Install `minqlx` on your server.**
+3.  **Install the `ql_agent_plugin.py` plugin:**
+    - Copy the `minqlx-plugin/ql_agent_plugin.py` file to your `minqlx-plugins` directory.
+    - Add `ql_agent_plugin` to your `qlx_plugins` cvar in your server configuration.
+    - Set the `AGENT_STEAM_ID` in `ql_agent_plugin.py` to the SteamID64 of the account that will be used by the AI agent.
 
-from QuakeLiveInterface.connection import ServerConnection
+## Usage
 
-connection = ServerConnection(server_ip, server_port)
-connection.connect()
-```
+The primary way to use this library is through the `QuakeLiveEnv` class, which is compatible with most reinforcement learning frameworks.
 
-To send a command to the server:
-
-```python
-
-connection.send_command("some_command")
-```
-
-To create a Quake Live client and interpret game state data:
+Here is a simple example of how to run a random agent in the environment. See `example.py` for the full script.
 
 ```python
+import gymnasium as gym
+from QuakeLiveInterface.env import QuakeLiveEnv
+import logging
 
-from QuakeLiveInterface.client import QuakeLiveClient
+# Configure logging to see the output from the performance tracker
+logging.basicConfig(level=logging.INFO)
 
-client = QuakeLiveClient(server_ip, server_port)
-client.connect()
-game_state = client.get_game_state()
+def run_random_agent():
+    """
+    Runs a random agent in the QuakeLiveEnv for one episode.
+    """
+    print("Initializing Quake Live environment...")
+    env = QuakeLiveEnv()
+
+    print("Resetting environment for a new episode...")
+    obs, info = env.reset()
+    done = False
+
+    while not done:
+        # Take a random action
+        action = env.action_space.sample()
+
+        # Step the environment
+        obs, reward, done, info = env.step(action)
+
+    print("Episode finished.")
+
+    # The performance summary for the episode will be logged automatically.
+    env.close()
+
+if __name__ == "__main__":
+    run_random_agent()
 ```
 
-### Testing
+To run the example:
+```bash
+$ poetry run python example.py
+```
+
+## Testing
 
 To run tests:
 

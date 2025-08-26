@@ -1,85 +1,84 @@
-import unittest
-from QuakeLiveInterface.state import GameState, PacketType, PACKET_FORMATS
-import struct
+import pytest
+import json
+from QuakeLiveInterface.state import GameState, Player, Weapon, Item
 
-
-class GameStateTest(unittest.TestCase):
-    def setUp(self):
-        self.game_state = GameState()
-
-    def create_packet(self, packet_type, *args):
-        packet_data = PACKET_FORMATS[packet_type]
-        return struct.pack(packet_data, packet_type.value, *args)
-
-    def test_handle_player_movement(self):
-        player_id = 1
-        position = (10.5, 20.5, 30.5)
-        packet = self.create_packet(PacketType.PLAYER_MOVEMENT, player_id, *position)
-        self.game_state.update(packet)
-        self.assertEqual(self.game_state.get_player_position(player_id), position)
-
-    def test_handle_item_pickup(self):
-        item_id = 2
-        player_id = 1
-        location = (10.5, 20.5, 30.5)
-        packet = self.create_packet(
-            PacketType.ITEM_PICKUP, item_id, player_id, *location
-        )
-        self.game_state.update(packet)
-        self.assertEqual(self.game_state.get_item_location(item_id), location)
-
-    def test_handle_player_shot(self):
-        player_id = 1
-        weapon_id = 1
-        target_id = 3
-        damage = 50
-        packet = self.create_packet(
-            PacketType.PLAYER_SHOT, player_id, weapon_id, target_id, damage
-        )
-        self.game_state.player_health[target_id] = 100
-        self.game_state.update(packet)
-        self.assertEqual(self.game_state.player_health[target_id], 50)
-
-    def test_handle_player_death(self):
-        player_id = 1
-        killer_id = 2
-        weapon_id = 1
-        packet = self.create_packet(
-            PacketType.PLAYER_DEATH, player_id, killer_id, weapon_id
-        )
-        self.game_state.update(packet)
-        self.assertEqual(self.game_state.player_health[player_id], 100)
-        self.assertDictEqual(
-            self.game_state.player_ammo[player_id], self.game_state.default_ammo_count()
-        )
-
-    def test_handle_game_state_update(self):
-        player_id = 1
-        health = 50
-        ammo_values = [50, 10, 5, 5, 10, 20, 30, 40]
-        packet = self.create_packet(
-            PacketType.GAME_STATE_UPDATE, player_id, health, *ammo_values
-        )
-        self.game_state.update(packet)
-        self.assertEqual(self.game_state.player_health[player_id], health)
-        self.assertDictEqual(
-            self.game_state.player_ammo[player_id],
+@pytest.fixture
+def sample_redis_data():
+    """Provides a sample JSON payload similar to what's received from Redis."""
+    return json.dumps({
+        "agent": {
+            "steam_id": "76561197960265728",
+            "name": "Agent",
+            "health": 100,
+            "armor": 50,
+            "position": {"x": 10, "y": 20, "z": 30},
+            "velocity": {"x": 1, "y": 2, "z": 3},
+            "is_alive": True,
+            "weapons": [{"name": "Gauntlet", "ammo": 0}, {"name": "Machinegun", "ammo": 100}],
+            "selected_weapon": {"name": "Machinegun", "ammo": 100}
+        },
+        "opponents": [
             {
-                "machine_gun": 50,
-                "shotgun": 10,
-                "grenade_launcher": 5,
-                "rocket_launcher": 5,
-                "lightning_gun": 10,
-                "railgun": 20,
-                "plasma_gun": 30,
-                "bfg": 40,
-            },
-        )
+                "steam_id": "76561197960265729",
+                "name": "Opponent1",
+                "health": 80,
+                "armor": 25,
+                "position": {"x": 100, "y": 200, "z": 300},
+                "velocity": {"x": 4, "y": 5, "z": 6},
+                "is_alive": True,
+                "weapons": [{"name": "Gauntlet", "ammo": 0}],
+                "selected_weapon": {"name": "Gauntlet", "ammo": 0}
+            }
+        ],
+        "items": [
+            {
+                "name": "Mega Health",
+                "position": {"x": 50, "y": 50, "z": 50},
+                "is_available": True,
+                "spawn_time": -1
+            }
+        ],
+        "game_in_progress": True,
+        "game_type": "duel"
+    })
 
-    def test_invalid_packet(self):
-        with self.assertRaises(RuntimeError):
-            self.game_state.update(b"invalid_packet_data")
+def test_game_state_update(sample_redis_data):
+    """Tests that the GameState object is correctly updated from Redis data."""
+    gs = GameState()
+    gs.update_from_redis(sample_redis_data)
 
+    # Test agent state
+    agent = gs.get_agent()
+    assert isinstance(agent, Player)
+    assert agent.name == "Agent"
+    assert agent.health == 100
+    assert len(agent.weapons) == 2
+    assert agent.selected_weapon.name == "Machinegun"
 
-if __name__ == "__main__":
-    unittest.main()
+    # Test opponent state
+    opponents = gs.get_opponents()
+    assert len(opponents) == 1
+    assert isinstance(opponents[0], Player)
+    assert opponents[0].name == "Opponent1"
+
+    # Test item state
+    items = gs.get_items()
+    assert len(items) == 1
+    assert isinstance(items[0], Item)
+    assert items[0].name == "Mega Health"
+    assert items[0].is_available
+
+    # Test game state
+    assert gs.game_in_progress
+    assert gs.game_type == "duel"
+
+def test_empty_game_state():
+    """Tests the GameState with empty or missing data."""
+    gs = GameState()
+    gs.update_from_redis(json.dumps({}))
+
+    assert gs.get_agent() is None
+    assert len(gs.get_opponents()) == 0
+    assert len(gs.get_items()) == 0
+    assert not gs.game_in_progress
+    assert gs.game_type is None
