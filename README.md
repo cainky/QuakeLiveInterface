@@ -31,10 +31,10 @@ You will also need a running Redis server and, for replay analysis, the [UberDem
 
 1.  **Set up a Quake Live dedicated server.**
 2.  **Install `minqlx` on your server.**
-3.  **Install the `ql_agent_plugin.py` plugin:**
+3.  **Install and Configure the `ql_agent_plugin.py` plugin:**
     - Copy the `minqlx-plugin/ql_agent_plugin.py` file to your `minqlx-plugins` directory.
     - Add `ql_agent_plugin` to your `qlx_plugins` cvar in your server configuration.
-    - Set the `AGENT_STEAM_ID` in `ql_agent_plugin.py` to the SteamID64 of the account that will be used by the AI agent.
+    - Set the `qlx_agentSteamId` cvar in your server configuration to the SteamID64 of the account that will be used by the AI agent. For example: `set qlx_agentSteamId "your_steam_id_here"`
 
 ## Usage
 

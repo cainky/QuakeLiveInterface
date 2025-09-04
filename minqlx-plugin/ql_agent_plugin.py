@@ -4,9 +4,6 @@ import json
 import threading
 import time
 
-# This should be set to the SteamID64 of the agent's account.
-AGENT_STEAM_ID = "some_steam_id"
-
 # See https://www.quakelive.com/forum/showthread.php?612-Useful-Commands-and-Cvars
 WEAPON_MAP = {
     0: "Gauntlet",
@@ -24,11 +21,15 @@ WEAPON_MAP = {
 class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
+
+        # Configuration
+        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", "some_steam_id")
         self.redis_host = self.get_cvar("qlx_redisAddress", "localhost")
         self.redis_port = int(self.get_cvar("qlx_redisPort", 6379))
         self.redis_db = int(self.get_cvar("qlx_redisDatabase", 0))
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
 
+        # Redis channels
         self.command_channel = 'ql:agent:command'
         self.admin_command_channel = 'ql:admin:command'
         self.game_state_channel = 'ql:game:state'
@@ -103,7 +104,7 @@ class ql_agent_plugin(minqlx.Plugin):
     def get_agent_player(self):
         """Finds the player object for the agent."""
         for player in self.players():
-            if player.steam_id == AGENT_STEAM_ID:
+            if player.steam_id == self.agent_steam_id:
                 return player
         return None
 
@@ -157,7 +158,7 @@ class ql_agent_plugin(minqlx.Plugin):
             if not agent_player:
                 return
 
-            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != AGENT_STEAM_ID]
+            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != self.agent_steam_id]
 
             # minqlx.items() returns all item entities in the game.
             items = [self._serialize_item(item) for item in minqlx.items()]
