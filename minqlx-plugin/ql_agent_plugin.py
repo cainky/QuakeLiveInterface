@@ -4,9 +4,6 @@ import json
 import threading
 import time
 
-# This should be set to the SteamID64 of the agent's account.
-AGENT_STEAM_ID = "some_steam_id"
-
 # See https://www.quakelive.com/forum/showthread.php?612-Useful-Commands-and-Cvars
 WEAPON_MAP = {
     0: "Gauntlet",
@@ -24,11 +21,15 @@ WEAPON_MAP = {
 class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
+
+        # Configuration
+        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", "some_steam_id")
         self.redis_host = self.get_cvar("qlx_redisAddress", "localhost")
         self.redis_port = int(self.get_cvar("qlx_redisPort", 6379))
         self.redis_db = int(self.get_cvar("qlx_redisDatabase", 0))
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
 
+        # Redis channels
         self.command_channel = 'ql:agent:command'
         self.admin_command_channel = 'ql:admin:command'
         self.game_state_channel = 'ql:game:state'
@@ -103,7 +104,7 @@ class ql_agent_plugin(minqlx.Plugin):
     def get_agent_player(self):
         """Finds the player object for the agent."""
         for player in self.players():
-            if player.steam_id == AGENT_STEAM_ID:
+            if player.steam_id == self.agent_steam_id:
                 return player
         return None
 
@@ -139,15 +140,14 @@ class ql_agent_plugin(minqlx.Plugin):
 
     def _serialize_item(self, item):
         """Serializes an item object into a dictionary."""
-        # The minqlx API for items is not well-documented.
-        # We assume that we can get the item's name, position, and whether it's spawned.
-        # Getting the respawn timer is tricky and might require tracking game events.
-        # For now, we'll just report if it's available.
+        # Based on the minqlx source code, the item object is a gentity_t.
+        # The 'inuse' attribute indicates if the item is currently spawned.
+        # The 'spawnTime' attribute indicates when the item will respawn.
         return {
-            'name': item.name,
-            'position': {'x': item.position[0], 'y': item.position[1], 'z': item.position[2]},
-            'is_available': item.is_spawned(), # Assuming this method exists
-            'spawn_time': -1 # Placeholder
+            'name': item.classname,
+            'position': {'x': item.s.origin[0], 'y': item.s.origin[1], 'z': item.s.origin[2]},
+            'is_available': item.inuse,
+            'spawn_time': item.spawnTime
         }
 
     def handle_server_frame(self):
@@ -157,7 +157,7 @@ class ql_agent_plugin(minqlx.Plugin):
             if not agent_player:
                 return
 
-            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != AGENT_STEAM_ID]
+            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != self.agent_steam_id]
 
             # minqlx.items() returns all item entities in the game.
             items = [self._serialize_item(item) for item in minqlx.items()]

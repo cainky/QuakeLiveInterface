@@ -45,7 +45,7 @@ def test_env_step(mock_client):
         "look_yaw": np.array([0.0]),
     }
 
-    obs, reward, done, info = env.step(action)
+    obs, reward, terminated, truncated, info = env.step(action)
 
     mock_client.move.assert_called()
     mock_client.look.assert_called()
@@ -53,9 +53,11 @@ def test_env_step(mock_client):
 
     assert isinstance(obs, np.ndarray)
     assert isinstance(reward, (int, float))
-    assert isinstance(done, bool)
+    assert isinstance(terminated, bool)
+    assert isinstance(truncated, bool)
     assert isinstance(info, dict)
 
+@pytest.mark.filterwarnings("ignore:.*np.bool8.*:DeprecationWarning")
 def test_gym_env_checker():
     """
     Uses the official Gymnasium environment checker to validate the environment.
@@ -97,3 +99,42 @@ def test_gym_env_checker():
 
         # This will raise an exception if the environment is not compliant
         check_env(env)
+
+def test_get_item_features(mock_client):
+    """Tests the _get_item_features method."""
+    env = QuakeLiveEnv()
+
+    # Create a mock item
+    mock_item = {
+        'name': 'item_health_large',
+        'position': {'x': 100, 'y': 200, 'z': 50},
+        'is_available': True,
+        'spawn_time': 15000
+    }
+
+    # Create another mock item
+    mock_item2 = {
+        'name': 'item_armor_shard',
+        'position': {'x': -100, 'y': -200, 'z': -50},
+        'is_available': False,
+        'spawn_time': 0
+    }
+
+    items = [mock_item, mock_item2]
+    features = env._get_item_features(items)
+
+    assert features.shape == (5 * env.NUM_ITEMS,)
+
+    # Check features for the first item
+    assert features[0] == 100 / env.MAP_DIMS[0] * 2 - 1
+    assert features[1] == 200 / env.MAP_DIMS[1] * 2 - 1
+    assert features[2] == 50 / env.MAP_DIMS[2] * 2 - 1
+    assert features[3] == 1
+    assert features[4] == 15000 / 30000.0
+
+    # Check features for the second item
+    assert features[5] == -100 / env.MAP_DIMS[0] * 2 - 1
+    assert features[6] == -200 / env.MAP_DIMS[1] * 2 - 1
+    assert features[7] == -50 / env.MAP_DIMS[2] * 2 - 1
+    assert features[8] == 0
+    assert features[9] == 0 / 30000.0

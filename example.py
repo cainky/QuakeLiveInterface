@@ -25,20 +25,21 @@ def run_random_agent():
 
     print("Resetting environment for a new episode...")
     obs, info = env.reset()
-    done = False
+    terminated = False
+    truncated = False
     step_count = 0
 
     print("Starting episode...")
-    while not done:
+    while not (terminated or truncated):
         # Take a random action
         action = env.action_space.sample()
 
         # Step the environment
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
 
         # Print some info every 10 steps
         if step_count % 10 == 0:
-            print(f"Step: {step_count}, Reward: {reward:.4f}, Done: {done}")
+            print(f"Step: {step_count}, Reward: {reward:.4f}, Terminated: {terminated}, Truncated: {truncated}")
             # You can also render the environment to see some basic stats
             # env.render()
 

@@ -56,7 +56,7 @@ class QuakeLiveEnv(gym.Env):
         self.agent_feature_size = 11
         self.weapon_feature_size = 2 * self.NUM_WEAPONS
         self.opponent_feature_size = 11
-        self.item_feature_size = 4 * self.NUM_ITEMS
+        self.item_feature_size = 5 * self.NUM_ITEMS # x, y, z, is_available, spawn_time
         obs_size = self.agent_feature_size + self.weapon_feature_size + self.opponent_feature_size + self.item_feature_size
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
 
@@ -74,7 +74,7 @@ class QuakeLiveEnv(gym.Env):
             # Handle case where no update is received
             # For now, we'll just return the current state with no reward
             obs = self._get_observation()
-            return obs, 0, False, {}
+            return obs, 0, False, False, {}
 
         new_game_state = self.client.get_game_state()
 
@@ -82,8 +82,9 @@ class QuakeLiveEnv(gym.Env):
         reward = self.reward_system.calculate_reward(new_game_state, self.last_action)
         self.game_state = new_game_state
 
-        # Check if the episode is done
-        done = not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive)
+        # Check if the episode is terminated or truncated
+        terminated = bool(not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive))
+        truncated = False # This environment doesn't have a time limit or other truncation condition
 
         # Get the observation
         obs = self._get_observation()
@@ -91,7 +92,7 @@ class QuakeLiveEnv(gym.Env):
         # Log performance metrics
         self.performance_tracker.log_step(self.game_state, action)
 
-        return obs, reward, done, {}
+        return obs, reward, terminated, truncated, {}
 
     def reset(self, seed=None, options=None, reset_timeout=15.0):
         """
@@ -246,13 +247,14 @@ class QuakeLiveEnv(gym.Env):
 
     def _get_item_features(self, items):
         """Extracts and normalizes features for items."""
-        features = np.zeros(4 * self.NUM_ITEMS)
+        features = np.zeros(5 * self.NUM_ITEMS)
         for i, item in enumerate(items):
             if i >= self.NUM_ITEMS:
                 break
-            pos = self._normalize_pos(item.position)
-            is_available = 1 if item.is_available else 0
-            features[i*4 : i*4 + 4] = [*pos, is_available]
+            pos = self._normalize_pos(item['position'])
+            is_available = 1 if item['is_available'] else 0
+            spawn_time = item['spawn_time'] / 30000.0 # Normalize by 30 seconds
+            features[i*5 : i*5 + 5] = [*pos, is_available, spawn_time]
         return features
 
     def _apply_action(self, action):
