@@ -75,6 +75,7 @@ def test_gym_env_checker():
         mock_agent.armor = 100
         mock_agent.position = {'x':0,'y':0,'z':0}
         mock_agent.velocity = {'x':0,'y':0,'z':0}
+        mock_agent.view_angles = {'pitch': 0, 'yaw': 0, 'roll': 0}
         mock_agent.weapons = []
         mock_agent.selected_weapon = None
 
@@ -85,6 +86,7 @@ def test_gym_env_checker():
         mock_opponent.armor = 100
         mock_opponent.position = {'x':0,'y':0,'z':0}
         mock_opponent.velocity = {'x':0,'y':0,'z':0}
+        mock_opponent.view_angles = {'pitch': 0, 'yaw': 0, 'roll': 0}
 
         mock_game_state_instance.get_agent.return_value = mock_agent
         mock_game_state_instance.get_opponents.return_value = [mock_opponent]

@@ -12,6 +12,15 @@ def run_random_agent():
     print("Initializing Quake Live environment...")
     # This assumes that the Quake Live server with the minqlx plugin is running
     # and that Redis is available at the default host and port.
+
+    # The environment can be configured with different parameters.
+    # For example:
+    # env = QuakeLiveEnv(
+    #     redis_host='127.0.0.1',
+    #     max_health=150,
+    #     max_armor=150,
+    #     num_items=15
+    # )
     env = QuakeLiveEnv()
 
     print("Resetting environment for a new episode...")

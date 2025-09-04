@@ -4,8 +4,8 @@ QuakeLiveInterface is a Python library designed to provide a comprehensive, obje
 
 ## Features
 
-*   **Gymnasium-Compatible Environment**: A `QuakeLiveEnv` class that provides a standard interface for RL agents (`step`, `reset`).
-*   **Object-Oriented Game State**: A detailed and structured representation of the game state, including players, items, and weapons.
+*   **Gymnasium-Compatible Environment**: A `QuakeLiveEnv` class that provides a standard interface for RL agents (`step`, `reset`). The reset mechanism is robust, waiting for the game to be ready before starting a new episode.
+*   **Object-Oriented Game State**: A detailed and structured representation of the game state, including players, items, and weapons. The observation includes the closest opponent's state, providing more relevant information to the agent.
 *   **Flexible Reward System**: A customizable reward system that can be configured to encourage different behaviors.
 *   **Replay Analysis**: Integration with [UberDemoTools](https://github.com/mightycow/uberdemotools) to record and parse game demos for offline analysis and imitation learning.
 *   **Performance Tracking**: A built-in system to track and log key performance metrics like K/D ratio, damage, and accuracy.
@@ -81,6 +81,23 @@ To run the example:
 ```bash
 $ poetry run python example.py
 ```
+
+### Environment Configuration
+
+The `QuakeLiveEnv` can be configured upon initialization. Here are the available parameters:
+
+| Parameter      | Type        | Default                  | Description                                                                                             |
+|----------------|-------------|--------------------------|---------------------------------------------------------------------------------------------------------|
+| `redis_host`   | `str`       | `'localhost'`            | The hostname of the Redis server.                                                                       |
+| `redis_port`   | `int`       | `6379`                   | The port of the Redis server.                                                                           |
+| `redis_db`     | `int`       | `0`                      | The Redis database to use.                                                                              |
+| `max_health`   | `int`       | `200`                    | The maximum health value used for normalization.                                                        |
+| `max_armor`    | `int`       | `200`                    | The maximum armor value used for normalization.                                                         |
+| `map_dims`     | `tuple`     | `(4000, 4000, 1000)`     | Estimated map dimensions (x, y, z) for position normalization. This should be adjusted for custom maps. |
+| `max_velocity` | `int`       | `800`                    | The maximum velocity used for normalization.                                                            |
+| `max_ammo`     | `int`       | `200`                    | The maximum ammo for any weapon, used for normalization.                                                |
+| `num_items`    | `int`       | `10`                     | The maximum number of items to include in the observation space.                                        |
+
 
 ## Testing
 

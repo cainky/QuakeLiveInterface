@@ -6,13 +6,14 @@ logger = logging.getLogger(__name__)
 
 class Player:
     """Represents a player in the game."""
-    def __init__(self, steam_id, name, health, armor, position, velocity, is_alive, weapons, selected_weapon):
+    def __init__(self, steam_id, name, health, armor, position, velocity, view_angles, is_alive, weapons, selected_weapon):
         self.steam_id = steam_id
         self.name = name
         self.health = health
         self.armor = armor
         self.position = position
         self.velocity = velocity
+        self.view_angles = view_angles
         self.is_alive = is_alive
         self.weapons = weapons
         self.selected_weapon = selected_weapon
@@ -93,6 +94,7 @@ class GameState:
             armor=player_data.get('armor'),
             position=player_data.get('position'),
             velocity=player_data.get('velocity'),
+            view_angles=player_data.get('view_angles', {'pitch': 0, 'yaw': 0, 'roll': 0}),
             is_alive=player_data.get('is_alive'),
             weapons=weapons,
             selected_weapon=selected_weapon

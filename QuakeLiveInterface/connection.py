@@ -72,3 +72,14 @@ class RedisConnection:
         except redis.exceptions.RedisError as e:
             logger.error(f"Error getting message: {e}")
             raise
+
+    def close(self):
+        """
+        Closes the Redis connection.
+        """
+        try:
+            self.redis.close()
+            logger.info("Redis connection closed.")
+        except redis.exceptions.RedisError as e:
+            logger.error(f"Error closing Redis connection: {e}")
+            raise
