@@ -83,3 +83,10 @@ class QuakeLiveClient:
     # Other getters
     def get_game_state(self):
         return self.game_state
+
+    def close(self):
+        """
+        Closes the connection to the Redis server.
+        """
+        logger.info("Closing QuakeLiveClient connection.")
+        self.connection.close()

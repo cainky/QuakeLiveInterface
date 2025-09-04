@@ -1,10 +1,14 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import time
+import logging
 from QuakeLiveInterface.client import QuakeLiveClient
 from QuakeLiveInterface.state import GameState
 from QuakeLiveInterface.rewards import RewardSystem
 from QuakeLiveInterface.metrics import PerformanceTracker
+
+logger = logging.getLogger(__name__)
 
 class QuakeLiveEnv(gym.Env):
     """
@@ -12,7 +16,9 @@ class QuakeLiveEnv(gym.Env):
     """
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0):
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0,
+                 max_health=200, max_armor=200, map_dims=(4000, 4000, 1000),
+                 max_velocity=800, max_ammo=200, num_items=10):
         super(QuakeLiveEnv, self).__init__()
 
         self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
@@ -22,8 +28,6 @@ class QuakeLiveEnv(gym.Env):
         self.episode_num = 0
 
         # Define action and observation space
-        # These will be refined in the next step.
-        # For now, a placeholder multi-discrete action space
         self.action_space = spaces.Dict({
             "move_forward_back": spaces.Discrete(3),  # 0: back, 1: none, 2: forward
             "move_right_left": spaces.Discrete(3),  # 0: left, 1: none, 2: right
@@ -33,25 +37,30 @@ class QuakeLiveEnv(gym.Env):
             "look_yaw": spaces.Box(low=-1.0, high=1.0, shape=(1,)),
         })
 
-        # The observation space will be a flattened vector of normalized game state features.
-        # Let's define the size based on the features we will include.
-        # Agent state: 11
-        # Weapon state: 20
-        # Opponent state: 11
-        # Item states: 40
-        # Total size = 11 + 20 + 11 + 40 = 82
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(82,), dtype=np.float32)
+        # Constants for normalization
+        self.MAX_HEALTH = max_health
+        self.MAX_ARMOR = max_armor
+        self.MAP_DIMS = np.array(map_dims)
+        self.MAX_VELOCITY = max_velocity
+        self.WEAPON_LIST = [
+            "Gauntlet", "Machinegun", "Shotgun", "Grenade Launcher",
+            "Rocket Launcher", "Lightning Gun", "Railgun", "Plasma Gun",
+            "BFG", "Grappling Hook"
+        ]
+        self.WEAPON_MAP = {name: i for i, name in enumerate(self.WEAPON_LIST)}
+        self.NUM_WEAPONS = len(self.WEAPON_LIST)
+        self.MAX_AMMO = max_ammo
+        self.NUM_ITEMS = num_items
+
+        # Define observation space size dynamically
+        self.agent_feature_size = 11
+        self.weapon_feature_size = 2 * self.NUM_WEAPONS
+        self.opponent_feature_size = 11
+        self.item_feature_size = 4 * self.NUM_ITEMS
+        obs_size = self.agent_feature_size + self.weapon_feature_size + self.opponent_feature_size + self.item_feature_size
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
 
         self.last_action = None
-
-        # Constants for normalization
-        self.MAX_HEALTH = 200
-        self.MAX_ARMOR = 200
-        self.MAP_DIMS = np.array([4000, 4000, 1000]) # Estimated map dimensions
-        self.MAX_VELOCITY = 800 # units per second
-        self.NUM_WEAPONS = 10 # Number of weapons for one-hot encoding
-        self.MAX_AMMO = 200
-        self.NUM_ITEMS = 10 # Max number of items to track
 
     def step(self, action):
         """
@@ -84,7 +93,7 @@ class QuakeLiveEnv(gym.Env):
 
         return obs, reward, done, {}
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None, reset_timeout=15.0):
         """
         Resets the state of the environment and returns an initial observation.
         """
@@ -99,15 +108,25 @@ class QuakeLiveEnv(gym.Env):
         # Reset trackers and systems
         self.reward_system.reset()
         self.performance_tracker.reset()
+        self.game_state = GameState() # Reset game state
 
         # Send a command to restart the game
+        logger.info(f"Episode {self.episode_num}: Sending command to restart game.")
         self.client.send_admin_command('restart_game')
 
-        # Wait for the game to restart and get the initial state
-        # This needs a more robust implementation to ensure the game is ready
-        self.client.update_game_state()
-        self.game_state = self.client.get_game_state()
+        # Wait for the game to restart and for the agent to be alive
+        start_time = time.time()
+        while time.time() - start_time < reset_timeout:
+            if self.client.update_game_state():
+                self.game_state = self.client.get_game_state()
+                agent = self.game_state.get_agent()
+                if self.game_state.game_in_progress and agent and agent.is_alive:
+                    logger.info("Game reset successful. Agent is alive.")
+                    obs = self._get_observation()
+                    return obs, {}
+            time.sleep(0.1) # Avoid busy-waiting
 
+        logger.warning(f"Reset timeout ({reset_timeout}s) reached. Environment may not be ready.")
         obs = self._get_observation()
         return obs, {}
 
@@ -127,9 +146,7 @@ class QuakeLiveEnv(gym.Env):
         """
         Cleans up the environment's resources.
         """
-        # The Redis connection is managed by the client, which doesn't have a close method yet.
-        # We can add one if needed.
-        pass
+        self.client.close()
 
     def _get_observation(self):
         """
@@ -149,19 +166,38 @@ class QuakeLiveEnv(gym.Env):
         # Weapon features
         weapon_feats = self._get_weapon_features(agent)
 
-        # Opponent features (we'll just take the first opponent for simplicity)
+        # Opponent features: find the closest opponent
         opponents = self.game_state.get_opponents()
-        opponent_feats = self._get_player_features(opponents[0]) if opponents else np.zeros(11)
+        opponent_feats = np.zeros(self.opponent_feature_size)
+        if opponents:
+            agent_pos = np.array(list(agent.position.values()))
+            closest_opponent = None
+            min_dist_sq = float('inf')
+
+            for opp in opponents:
+                if not opp.is_alive:
+                    continue
+                opp_pos = np.array(list(opp.position.values()))
+                dist_sq = np.sum(np.square(agent_pos - opp_pos))
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_opponent = opp
+
+            if closest_opponent:
+                opponent_feats = self._get_player_features(closest_opponent)
 
         # Item features
         item_feats = self._get_item_features(self.game_state.get_items())
 
         # Concatenate all features into the observation vector
-        # The slicing needs to match the size defined in __init__
-        obs[0:11] = agent_feats
-        obs[11:31] = weapon_feats
-        obs[31:42] = opponent_feats
-        obs[42:82] = item_feats
+        offset = 0
+        obs[offset:offset+self.agent_feature_size] = agent_feats
+        offset += self.agent_feature_size
+        obs[offset:offset+self.weapon_feature_size] = weapon_feats
+        offset += self.weapon_feature_size
+        obs[offset:offset+self.opponent_feature_size] = opponent_feats
+        offset += self.opponent_feature_size
+        obs[offset:offset+self.item_feature_size] = item_feats
 
         return obs
 
@@ -182,30 +218,29 @@ class QuakeLiveEnv(gym.Env):
         armor = player.armor / self.MAX_ARMOR
         is_alive = 1 if player.is_alive else 0
 
-        # Assuming view angles are not available in player object yet, placeholder
-        # In a real implementation, this would come from the game state.
-        pitch = 0.0
-        yaw = 0.0
+        # Normalize view angles. Pitch: [-90, 90] -> [-1, 1]. Yaw: [-180, 180] -> [-1, 1].
+        pitch = player.view_angles['pitch'] / 90.0
+        yaw = player.view_angles['yaw'] / 180.0
 
         return np.array([*pos, *vel, pitch, yaw, health, armor, is_alive])
 
     def _get_weapon_features(self, agent):
         """Extracts and normalizes weapon features for the agent."""
-        features = np.zeros(20)
-        if not agent or not agent.selected_weapon:
+        features = np.zeros(2 * self.NUM_WEAPONS)
+        if not agent:
             return features
 
         # One-hot encode selected weapon
-        # This requires a mapping from weapon name to index
-        weapon_map = {name: i for i, name in enumerate(self.game_state.get_agent().weapons)}
-        weapon_idx = weapon_map.get(agent.selected_weapon.name, -1)
-        if weapon_idx != -1 and weapon_idx < self.NUM_WEAPONS:
-            features[weapon_idx] = 1
+        if agent.selected_weapon:
+            weapon_idx = self.WEAPON_MAP.get(agent.selected_weapon.name, -1)
+            if weapon_idx != -1:
+                features[weapon_idx] = 1
 
         # Ammo for each weapon
-        for i, weapon in enumerate(agent.weapons):
-            if i < self.NUM_WEAPONS:
-                features[self.NUM_WEAPONS + i] = weapon.ammo / self.MAX_AMMO
+        for weapon in agent.weapons:
+            weapon_idx = self.WEAPON_MAP.get(weapon.name, -1)
+            if weapon_idx != -1:
+                features[self.NUM_WEAPONS + weapon_idx] = weapon.ammo / self.MAX_AMMO
 
         return features
 

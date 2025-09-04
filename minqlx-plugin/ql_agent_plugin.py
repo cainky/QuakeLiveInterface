@@ -7,6 +7,20 @@ import time
 # This should be set to the SteamID64 of the agent's account.
 AGENT_STEAM_ID = "some_steam_id"
 
+# See https://www.quakelive.com/forum/showthread.php?612-Useful-Commands-and-Cvars
+WEAPON_MAP = {
+    0: "Gauntlet",
+    1: "Machinegun",
+    2: "Shotgun",
+    3: "Grenade Launcher",
+    4: "Rocket Launcher",
+    5: "Lightning Gun",
+    6: "Railgun",
+    7: "Plasma Gun",
+    8: "BFG",
+    9: "Grappling Hook",
+}
+
 class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
@@ -98,17 +112,17 @@ class ql_agent_plugin(minqlx.Plugin):
         if not player:
             return None
 
-        # minqlx player.weapons() returns a list of weapon numbers the player has.
-        # We need to map these to names and get ammo for each.
-        # This is a simplified representation. A real implementation would need a mapping from weapon numbers to names.
         weapons = player.weapons()
         weapon_data = []
-        for w in weapons:
-            # This is a placeholder. A real implementation needs a weapon mapping.
-            weapon_data.append({"name": str(w), "ammo": player.get_weapon_ammo(w)})
+        for w_num in weapons:
+            weapon_name = WEAPON_MAP.get(w_num, "Unknown")
+            weapon_data.append({"name": weapon_name, "ammo": player.get_weapon_ammo(w_num)})
 
-        current_weapon = player.weapon
-        selected_weapon_data = {"name": str(current_weapon), "ammo": player.get_weapon_ammo(current_weapon)} if current_weapon else None
+        current_weapon_num = player.weapon
+        selected_weapon_data = {
+            "name": WEAPON_MAP.get(current_weapon_num, "Unknown"),
+            "ammo": player.get_weapon_ammo(current_weapon_num)
+        } if current_weapon_num else None
 
         return {
             'steam_id': player.steam_id,
@@ -117,6 +131,7 @@ class ql_agent_plugin(minqlx.Plugin):
             'armor': player.armor,
             'position': {'x': player.position[0], 'y': player.position[1], 'z': player.position[2]},
             'velocity': {'x': player.velocity[0], 'y': player.velocity[1], 'z': player.velocity[2]},
+            'view_angles': {'pitch': player.view_angles[0], 'yaw': player.view_angles[1], 'roll': player.view_angles[2]},
             'is_alive': player.is_alive,
             'weapons': weapon_data,
             'selected_weapon': selected_weapon_data,
