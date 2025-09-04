@@ -99,3 +99,42 @@ def test_gym_env_checker():
 
         # This will raise an exception if the environment is not compliant
         check_env(env)
+
+def test_get_item_features(mock_client):
+    """Tests the _get_item_features method."""
+    env = QuakeLiveEnv()
+
+    # Create a mock item
+    mock_item = {
+        'name': 'item_health_large',
+        'position': {'x': 100, 'y': 200, 'z': 50},
+        'is_available': True,
+        'spawn_time': 15000
+    }
+
+    # Create another mock item
+    mock_item2 = {
+        'name': 'item_armor_shard',
+        'position': {'x': -100, 'y': -200, 'z': -50},
+        'is_available': False,
+        'spawn_time': 0
+    }
+
+    items = [mock_item, mock_item2]
+    features = env._get_item_features(items)
+
+    assert features.shape == (5 * env.NUM_ITEMS,)
+
+    # Check features for the first item
+    assert features[0] == 100 / env.MAP_DIMS[0] * 2 - 1
+    assert features[1] == 200 / env.MAP_DIMS[1] * 2 - 1
+    assert features[2] == 50 / env.MAP_DIMS[2] * 2 - 1
+    assert features[3] == 1
+    assert features[4] == 15000 / 30000.0
+
+    # Check features for the second item
+    assert features[5] == -100 / env.MAP_DIMS[0] * 2 - 1
+    assert features[6] == -200 / env.MAP_DIMS[1] * 2 - 1
+    assert features[7] == -50 / env.MAP_DIMS[2] * 2 - 1
+    assert features[8] == 0
+    assert features[9] == 0 / 30000.0

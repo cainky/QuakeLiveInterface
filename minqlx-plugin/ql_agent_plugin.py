@@ -140,15 +140,14 @@ class ql_agent_plugin(minqlx.Plugin):
 
     def _serialize_item(self, item):
         """Serializes an item object into a dictionary."""
-        # The minqlx API for items is not well-documented.
-        # We assume that we can get the item's name, position, and whether it's spawned.
-        # Getting the respawn timer is tricky and might require tracking game events.
-        # For now, we'll just report if it's available.
+        # Based on the minqlx source code, the item object is a gentity_t.
+        # The 'inuse' attribute indicates if the item is currently spawned.
+        # The 'spawnTime' attribute indicates when the item will respawn.
         return {
-            'name': item.name,
-            'position': {'x': item.position[0], 'y': item.position[1], 'z': item.position[2]},
-            'is_available': item.is_spawned(), # Assuming this method exists
-            'spawn_time': -1 # Placeholder
+            'name': item.classname,
+            'position': {'x': item.s.origin[0], 'y': item.s.origin[1], 'z': item.s.origin[2]},
+            'is_available': item.inuse,
+            'spawn_time': item.spawnTime
         }
 
     def handle_server_frame(self):

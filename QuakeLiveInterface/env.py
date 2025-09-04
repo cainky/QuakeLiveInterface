@@ -56,7 +56,7 @@ class QuakeLiveEnv(gym.Env):
         self.agent_feature_size = 11
         self.weapon_feature_size = 2 * self.NUM_WEAPONS
         self.opponent_feature_size = 11
-        self.item_feature_size = 4 * self.NUM_ITEMS
+        self.item_feature_size = 5 * self.NUM_ITEMS # x, y, z, is_available, spawn_time
         obs_size = self.agent_feature_size + self.weapon_feature_size + self.opponent_feature_size + self.item_feature_size
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
 
@@ -247,13 +247,14 @@ class QuakeLiveEnv(gym.Env):
 
     def _get_item_features(self, items):
         """Extracts and normalizes features for items."""
-        features = np.zeros(4 * self.NUM_ITEMS)
+        features = np.zeros(5 * self.NUM_ITEMS)
         for i, item in enumerate(items):
             if i >= self.NUM_ITEMS:
                 break
-            pos = self._normalize_pos(item.position)
-            is_available = 1 if item.is_available else 0
-            features[i*4 : i*4 + 4] = [*pos, is_available]
+            pos = self._normalize_pos(item['position'])
+            is_available = 1 if item['is_available'] else 0
+            spawn_time = item['spawn_time'] / 30000.0 # Normalize by 30 seconds
+            features[i*5 : i*5 + 5] = [*pos, is_available, spawn_time]
         return features
 
     def _apply_action(self, action):
