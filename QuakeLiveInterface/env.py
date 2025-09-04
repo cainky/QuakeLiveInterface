@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import time
 import logging
+import os
 from QuakeLiveInterface.client import QuakeLiveClient
 from QuakeLiveInterface.state import GameState
 from QuakeLiveInterface.rewards import RewardSystem
@@ -18,7 +19,8 @@ class QuakeLiveEnv(gym.Env):
 
     def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0,
                  max_health=200, max_armor=200, map_dims=(4000, 4000, 1000),
-                 max_velocity=800, max_ammo=200, num_items=10):
+                 max_velocity=800, max_ammo=200, num_items=10, num_opponents=3,
+                 max_episode_steps=1000, demo_dir=None):
         super(QuakeLiveEnv, self).__init__()
 
         self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
@@ -26,6 +28,9 @@ class QuakeLiveEnv(gym.Env):
         self.reward_system = RewardSystem()
         self.performance_tracker = PerformanceTracker()
         self.episode_num = 0
+        self.step_count = 0
+        self.max_episode_steps = max_episode_steps
+        self.demo_dir = demo_dir
 
         # Define action and observation space
         self.action_space = spaces.Dict({
@@ -51,11 +56,12 @@ class QuakeLiveEnv(gym.Env):
         self.NUM_WEAPONS = len(self.WEAPON_LIST)
         self.MAX_AMMO = max_ammo
         self.NUM_ITEMS = num_items
+        self.NUM_OPPONENTS = num_opponents
 
         # Define observation space size dynamically
         self.agent_feature_size = 11
         self.weapon_feature_size = 2 * self.NUM_WEAPONS
-        self.opponent_feature_size = 11
+        self.opponent_feature_size = 11 * self.NUM_OPPONENTS
         self.item_feature_size = 5 * self.NUM_ITEMS # x, y, z, is_available, spawn_time
         obs_size = self.agent_feature_size + self.weapon_feature_size + self.opponent_feature_size + self.item_feature_size
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
@@ -68,6 +74,7 @@ class QuakeLiveEnv(gym.Env):
         """
         self.last_action = action
         self._apply_action(action)
+        self.step_count += 1
 
         # Wait for the next game state update
         if not self.client.update_game_state():
@@ -84,7 +91,7 @@ class QuakeLiveEnv(gym.Env):
 
         # Check if the episode is terminated or truncated
         terminated = bool(not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive))
-        truncated = False # This environment doesn't have a time limit or other truncation condition
+        truncated = self.step_count >= self.max_episode_steps
 
         # Get the observation
         obs = self._get_observation()
@@ -100,11 +107,23 @@ class QuakeLiveEnv(gym.Env):
         """
         super().reset(seed=seed)
 
+        # Stop recording the previous demo
+        if self.episode_num > 0 and self.demo_dir:
+            self.client.stop_demo_recording()
+
         # Log performance for the completed episode
         if self.episode_num > 0:
             self.performance_tracker.log_episode(self.episode_num)
 
         self.episode_num += 1
+        self.step_count = 0
+
+        # Start recording a new demo
+        if self.demo_dir:
+            if not os.path.exists(self.demo_dir):
+                os.makedirs(self.demo_dir)
+            demo_filename = f"ep_{self.episode_num}_{int(time.time())}"
+            self.client.start_demo_recording(demo_filename)
 
         # Reset trackers and systems
         self.reward_system.reset()
@@ -167,25 +186,26 @@ class QuakeLiveEnv(gym.Env):
         # Weapon features
         weapon_feats = self._get_weapon_features(agent)
 
-        # Opponent features: find the closest opponent
-        opponents = self.game_state.get_opponents()
+        # Opponent features: find the N closest opponents
+        opponents = [opp for opp in self.game_state.get_opponents() if opp.is_alive]
         opponent_feats = np.zeros(self.opponent_feature_size)
         if opponents:
             agent_pos = np.array(list(agent.position.values()))
-            closest_opponent = None
-            min_dist_sq = float('inf')
 
+            # Calculate distances to all living opponents
             for opp in opponents:
-                if not opp.is_alive:
-                    continue
                 opp_pos = np.array(list(opp.position.values()))
-                dist_sq = np.sum(np.square(agent_pos - opp_pos))
-                if dist_sq < min_dist_sq:
-                    min_dist_sq = dist_sq
-                    closest_opponent = opp
+                opp.distance = np.sum(np.square(agent_pos - opp_pos))
 
-            if closest_opponent:
-                opponent_feats = self._get_player_features(closest_opponent)
+            # Sort opponents by distance
+            opponents.sort(key=lambda o: o.distance)
+
+            # Get features for the N closest opponents
+            for i, opp in enumerate(opponents[:self.NUM_OPPONENTS]):
+                start_idx = i * 11
+                end_idx = start_idx + 11
+                opponent_feats[start_idx:end_idx] = self._get_player_features(opp)
+
 
         # Item features
         item_feats = self._get_item_features(self.game_state.get_items())

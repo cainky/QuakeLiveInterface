@@ -1,14 +1,21 @@
 import pytest
 from QuakeLiveInterface.rewards import RewardSystem
+import numpy as np
 
 # Mock classes to simulate the game state
+class MockWeapon:
+    def __init__(self, name, ammo):
+        self.name = name
+        self.ammo = ammo
+
 class MockPlayer:
-    def __init__(self, health=100, armor=100, is_alive=True, position={'x': 0, 'y': 0, 'z': 0}, steam_id="agent_id"):
+    def __init__(self, health=100, armor=100, is_alive=True, position={'x': 0, 'y': 0, 'z': 0}, steam_id="agent_id", weapons=None):
         self.health = health
         self.armor = armor
         self.is_alive = is_alive
         self.position = position
         self.steam_id = steam_id
+        self.weapons = weapons if weapons is not None else []
 
 class MockGameState:
     def __init__(self, agent, opponents):
@@ -42,8 +49,8 @@ def test_calculate_reward_initial_step(reward_system):
 
 def test_calculate_item_reward(reward_system):
     """Tests the item pickup reward component."""
-    agent1 = MockPlayer(health=80, armor=40)
-    agent2 = MockPlayer(health=100, armor=50) # +20 health, +10 armor
+    agent1 = MockPlayer(health=80, armor=40, weapons=[MockWeapon("Machinegun", 50)])
+    agent2 = MockPlayer(health=100, armor=50, weapons=[MockWeapon("Machinegun", 100), MockWeapon("Shotgun", 10)])
     state1 = MockGameState(agent=agent1, opponents=[])
     state2 = MockGameState(agent=agent2, opponents=[])
 
@@ -55,8 +62,8 @@ def test_calculate_item_reward(reward_system):
     }
     reward = reward_system.calculate_reward(state2, {})
 
-    # Expected item reward = (100-80) + (50-40) = 30
-    assert reward == 30
+    # Expected item reward = (100-80) health + (50-40) armor + 50 new weapon + 50 ammo = 130
+    assert reward == 130
 
 def test_calculate_damage_reward(reward_system):
     """Tests the damage and kills reward component."""
@@ -81,8 +88,11 @@ def test_calculate_damage_reward(reward_system):
 
 def test_calculate_map_control_reward(reward_system):
     """Tests the map control reward component."""
-    agent1 = MockPlayer(position={'x': 1000, 'y': 0, 'z': 0})
-    agent2 = MockPlayer(position={'x': 0, 'y': 0, 'z': 0}) # at center
+    # Using the first strategic point from the default list as the target
+    strategic_pos = reward_system.strategic_points[0]['pos']
+
+    agent1 = MockPlayer(position={'x': strategic_pos[0] + 1000, 'y': strategic_pos[1], 'z': strategic_pos[2]})
+    agent2 = MockPlayer(position={'x': strategic_pos[0], 'y': strategic_pos[1], 'z': strategic_pos[2]}) # at strategic point
     state1 = MockGameState(agent=agent1, opponents=[])
     state2 = MockGameState(agent=agent2, opponents=[])
 
@@ -93,9 +103,9 @@ def test_calculate_map_control_reward(reward_system):
     }
     reward = reward_system.calculate_reward(state2, {})
 
-    # Expected map control reward = 1 / (1 + dist_to_center / 1000)
-    # dist_to_center for agent2 is 0, so reward is 1 / (1 + 0) = 1
-    assert reward == 1.0
+    # Expected map control reward = 1000 / (dist + 1)
+    # dist for agent2 is 0, so reward is 1000 / 1 = 1000
+    assert reward == 1000.0
 
 def test_calculate_health_penalty(reward_system):
     """Tests the health penalty component."""
@@ -117,8 +127,8 @@ def test_calculate_health_penalty(reward_system):
 def test_calculate_total_reward_with_weights(reward_system):
     """Tests the final weighted reward calculation."""
     # Agent state
-    agent1 = MockPlayer(health=100, armor=50, position={'x': 500, 'y': 0, 'z': 0})
-    agent2 = MockPlayer(health=80, armor=40, position={'x': 0, 'y': 0, 'z': 0}) # Took damage, moved to center
+    agent1 = MockPlayer(health=100, armor=50, position={'x': 1000, 'y': 1000, 'z': 100}, weapons=[])
+    agent2 = MockPlayer(health=80, armor=40, position={'x': 0, 'y': 0, 'z': 100}, weapons=[]) # Took damage, moved to RL
 
     # Opponent state
     opp1_s1 = MockPlayer(health=100, is_alive=True, steam_id="opp1")
@@ -130,19 +140,19 @@ def test_calculate_total_reward_with_weights(reward_system):
     reward_system.calculate_reward(state1, {}) # Initialize
 
     # Default weights:
-    # 'item_control': 0.4,
-    # 'damage_and_kills': 0.35,
-    # 'map_control': 0.25,
+    # 'item_control': 0.4
+    # 'damage_and_kills': 0.35
+    # 'map_control': 0.25
     # 'health_penalty': -0.1
 
-    # item_reward: 0
+    # item_reward: 0 (no pickups)
     # damage_reward: 50
-    # map_control_reward: 1.0
-    # health_penalty: -30
+    # map_control_reward: 1000 / (0 + 1) = 1000 (at RL)
+    # health_penalty: -((100-80) + (50-40)) = -30
 
-    expected_reward = (0 * 0.4) + (50 * 0.35) + (1.0 * 0.25) + (-30 * -0.1)
-    # expected_reward = 0 + 17.5 + 0.25 + 3.0 = 20.75
+    expected_reward = (0 * 0.4) + (50 * 0.35) + (1000 * 0.25) + (-30 * -0.1)
+    # expected_reward = 0 + 17.5 + 250 + 3.0 = 270.5
 
     reward = reward_system.calculate_reward(state2, {})
 
-    assert reward == pytest.approx(20.75)
+    assert reward == pytest.approx(270.5)
