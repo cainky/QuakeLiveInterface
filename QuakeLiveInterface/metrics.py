@@ -29,6 +29,10 @@ class PerformanceTracker:
         Updates the metrics based on the last step.
         This should be called every step of the environment.
         """
+        # Shots fired
+        if action.get('attack') == 1:
+            self.shots_fired += 1
+
         if self.previous_state is None:
             self.previous_state = current_state
             return
@@ -59,15 +63,14 @@ class PerformanceTracker:
             self.deaths += 1
 
         # Item collection
-        if curr_agent.health > prev_agent.health or curr_agent.armor > prev_agent.armor:
+        if curr_agent.health > prev_agent.health:
             # This is a simplification. A better way is to check item pickup events.
             # For now, we'll just count "healing" as item collection.
-            item_name = "Health/Armor"
+            item_name = "Health"
             self.items_collected[item_name] = self.items_collected.get(item_name, 0) + 1
-
-        # Shots fired
-        if action.get('attack') == 1:
-            self.shots_fired += 1
+        if curr_agent.armor > prev_agent.armor:
+            item_name = "Armor"
+            self.items_collected[item_name] = self.items_collected.get(item_name, 0) + 1
 
         # Movement efficiency
         prev_pos = np.array(list(prev_agent.position.values()))
