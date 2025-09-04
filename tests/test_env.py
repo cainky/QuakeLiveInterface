@@ -45,7 +45,7 @@ def test_env_step(mock_client):
         "look_yaw": np.array([0.0]),
     }
 
-    obs, reward, done, info = env.step(action)
+    obs, reward, terminated, truncated, info = env.step(action)
 
     mock_client.move.assert_called()
     mock_client.look.assert_called()
@@ -53,9 +53,11 @@ def test_env_step(mock_client):
 
     assert isinstance(obs, np.ndarray)
     assert isinstance(reward, (int, float))
-    assert isinstance(done, bool)
+    assert isinstance(terminated, bool)
+    assert isinstance(truncated, bool)
     assert isinstance(info, dict)
 
+@pytest.mark.filterwarnings("ignore:.*np.bool8.*:DeprecationWarning")
 def test_gym_env_checker():
     """
     Uses the official Gymnasium environment checker to validate the environment.
