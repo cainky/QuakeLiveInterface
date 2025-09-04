@@ -74,7 +74,7 @@ class QuakeLiveEnv(gym.Env):
             # Handle case where no update is received
             # For now, we'll just return the current state with no reward
             obs = self._get_observation()
-            return obs, 0, False, {}
+            return obs, 0, False, False, {}
 
         new_game_state = self.client.get_game_state()
 
@@ -82,8 +82,9 @@ class QuakeLiveEnv(gym.Env):
         reward = self.reward_system.calculate_reward(new_game_state, self.last_action)
         self.game_state = new_game_state
 
-        # Check if the episode is done
-        done = not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive)
+        # Check if the episode is terminated or truncated
+        terminated = bool(not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive))
+        truncated = False # This environment doesn't have a time limit or other truncation condition
 
         # Get the observation
         obs = self._get_observation()
@@ -91,7 +92,7 @@ class QuakeLiveEnv(gym.Env):
         # Log performance metrics
         self.performance_tracker.log_step(self.game_state, action)
 
-        return obs, reward, done, {}
+        return obs, reward, terminated, truncated, {}
 
     def reset(self, seed=None, options=None, reset_timeout=15.0):
         """
