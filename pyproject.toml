@@ -11,6 +11,7 @@ python = "^3.9"
 redis = "^4.3.4"
 numpy = "^1.23.5"
 gymnasium = "^0.26.3"
+flask = "^3.0.0"
 
 
 [tool.poetry.group.dev.dependencies]
