@@ -8,7 +8,7 @@ packages = [{include = "QuakeLiveInterface"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-redis = "^4.3.4"
+redis = "^6.4.0"
 numpy = "^1.23.5"
 gymnasium = "^0.26.3"
 
