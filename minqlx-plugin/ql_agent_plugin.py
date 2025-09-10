@@ -4,18 +4,11 @@ import json
 import threading
 import time
 
-# See https://www.quakelive.com/forum/showthread.php?612-Useful-Commands-and-Cvars
-WEAPON_MAP = {
-    0: "Gauntlet",
-    1: "Machinegun",
-    2: "Shotgun",
-    3: "Grenade Launcher",
-    4: "Rocket Launcher",
-    5: "Lightning Gun",
-    6: "Railgun",
-    7: "Plasma Gun",
-    8: "BFG",
-    9: "Grappling Hook",
+# Default weapon map, used as a fallback
+DEFAULT_WEAPON_MAP = {
+    "0": "Gauntlet", "1": "Machinegun", "2": "Shotgun", "3": "Grenade Launcher",
+    "4": "Rocket Launcher", "5": "Lightning Gun", "6": "Railgun", "7": "Plasma Gun",
+    "8": "BFG", "9": "Grappling Hook"
 }
 
 class ql_agent_plugin(minqlx.Plugin):
@@ -28,6 +21,7 @@ class ql_agent_plugin(minqlx.Plugin):
         self.redis_port = int(self.get_cvar("qlx_redisPort", 6379))
         self.redis_db = int(self.get_cvar("qlx_redisDatabase", 0))
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
+        self._load_weapon_map()
 
         # Redis channels
         self.command_channel = 'ql:agent:command'
@@ -108,6 +102,20 @@ class ql_agent_plugin(minqlx.Plugin):
                 return player
         return None
 
+    def _load_weapon_map(self):
+        """Loads the weapon map from a cvar or uses the default."""
+        weapon_map_json = self.get_cvar("qlx_weaponMapJson")
+        if weapon_map_json:
+            try:
+                self.weapon_map = json.loads(weapon_map_json)
+                minqlx.log_info("Loaded custom weapon map from cvar.")
+            except json.JSONDecodeError:
+                minqlx.log_error("Invalid JSON in qlx_weaponMapJson cvar. Falling back to default weapon map.")
+                self.weapon_map = DEFAULT_WEAPON_MAP
+        else:
+            minqlx.log_info("Using default weapon map.")
+            self.weapon_map = DEFAULT_WEAPON_MAP
+
     def _serialize_player(self, player):
         """Serializes a player object into a dictionary."""
         if not player:
@@ -116,12 +124,12 @@ class ql_agent_plugin(minqlx.Plugin):
         weapons = player.weapons()
         weapon_data = []
         for w_num in weapons:
-            weapon_name = WEAPON_MAP.get(w_num, "Unknown")
+            weapon_name = self.weapon_map.get(str(w_num), "Unknown")
             weapon_data.append({"name": weapon_name, "ammo": player.get_weapon_ammo(w_num)})
 
         current_weapon_num = player.weapon
         selected_weapon_data = {
-            "name": WEAPON_MAP.get(current_weapon_num, "Unknown"),
+            "name": self.weapon_map.get(str(current_weapon_num), "Unknown"),
             "ammo": player.get_weapon_ammo(current_weapon_num)
         } if current_weapon_num else None
 

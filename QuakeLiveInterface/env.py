@@ -8,8 +8,16 @@ from QuakeLiveInterface.client import QuakeLiveClient
 from QuakeLiveInterface.state import GameState
 from QuakeLiveInterface.rewards import RewardSystem
 from QuakeLiveInterface.metrics import PerformanceTracker
+from QuakeLiveInterface.utils import estimate_map_dims_from_replay
 
 logger = logging.getLogger(__name__)
+
+# Default weapon list for Quake Live
+DEFAULT_WEAPON_LIST = [
+    "Gauntlet", "Machinegun", "Shotgun", "Grenade Launcher",
+    "Rocket Launcher", "Lightning Gun", "Railgun", "Plasma Gun",
+    "BFG", "Grappling Hook"
+]
 
 class QuakeLiveEnv(gym.Env):
     """
@@ -20,7 +28,7 @@ class QuakeLiveEnv(gym.Env):
     def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0,
                  max_health=200, max_armor=200, map_dims=(4000, 4000, 1000),
                  max_velocity=800, max_ammo=200, num_items=10, num_opponents=3,
-                 max_episode_steps=1000, demo_dir=None):
+                 max_episode_steps=1000, demo_dir=None, weapon_list=None):
         super(QuakeLiveEnv, self).__init__()
 
         self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
@@ -47,11 +55,7 @@ class QuakeLiveEnv(gym.Env):
         self.MAX_ARMOR = max_armor
         self.MAP_DIMS = np.array(map_dims)
         self.MAX_VELOCITY = max_velocity
-        self.WEAPON_LIST = [
-            "Gauntlet", "Machinegun", "Shotgun", "Grenade Launcher",
-            "Rocket Launcher", "Lightning Gun", "Railgun", "Plasma Gun",
-            "BFG", "Grappling Hook"
-        ]
+        self.WEAPON_LIST = weapon_list if weapon_list is not None else DEFAULT_WEAPON_LIST
         self.WEAPON_MAP = {name: i for i, name in enumerate(self.WEAPON_LIST)}
         self.NUM_WEAPONS = len(self.WEAPON_LIST)
         self.MAX_AMMO = max_ammo
@@ -276,6 +280,14 @@ class QuakeLiveEnv(gym.Env):
             spawn_time = item['spawn_time'] / 30000.0 # Normalize by 30 seconds
             features[i*5 : i*5 + 5] = [*pos, is_available, spawn_time]
         return features
+
+    @staticmethod
+    def estimate_map_dims(replay_file_path):
+        """
+        A helper function to estimate map dimensions from a replay file.
+        This is a convenience wrapper around the utility function.
+        """
+        return estimate_map_dims_from_replay(replay_file_path)
 
     def _apply_action(self, action):
         """
