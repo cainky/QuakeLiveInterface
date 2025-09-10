@@ -10,7 +10,7 @@ packages = [{include = "QuakeLiveInterface"}]
 python = "^3.9"
 redis = "^6.4.0"
 numpy = "^2.0.2"
-gymnasium = "^0.26.3"
+gymnasium = "^1.1.1"
 
 
 [tool.poetry.group.dev.dependencies]
