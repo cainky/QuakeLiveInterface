@@ -3,32 +3,41 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Estimated coordinates for key locations on the "Campgrounds" map (q3dm6)
-CAMPGROUNDS_STRATEGIC_POINTS = [
-    {'name': 'Rocket Launcher', 'pos': np.array([0, 0, 100])},
-    {'name': 'Railgun', 'pos': np.array([1500, 1500, 200])},
-    {'name': 'Lightning Gun', 'pos': np.array([-1000, 1000, 0])},
-    {'name': 'Mega Health', 'pos': np.array([500, -1000, 50])},
-    {'name': 'Red Armor', 'pos': np.array([-1500, -1500, 150])}
-]
+# High-value item classnames that define strategic interest points
+# These are automatically extracted from the game's item list
+HIGH_VALUE_ITEMS = {
+    'item_health_mega': 100,      # Mega Health - highest priority
+    'item_armor_body': 80,        # Red Armor
+    'item_armor_combat': 50,      # Yellow Armor
+    'weapon_rocketlauncher': 60,  # RL
+    'weapon_railgun': 55,         # RG
+    'weapon_lightning': 50,       # LG
+    'item_quad': 100,             # Quad Damage
+    'item_regen': 80,             # Regeneration
+    'holdable_medkit': 40,        # Medkit
+}
 
 
 class RewardSystem:
     """
     Calculates rewards based on changes in the game state.
+
+    Uses dynamic item positions from the game state for map control rewards,
+    eliminating the need for hardcoded map-specific coordinates.
     """
-    def __init__(self, reward_weights=None, strategic_points=None):
+    def __init__(self, reward_weights=None, high_value_items=None):
         if reward_weights is None:
             self.reward_weights = {
                 'item_control': 0.4,
                 'damage_and_kills': 0.35,
                 'map_control': 0.25,
-                'health_penalty': -0.1 # This is a penalty, so it's negative
+                'health_penalty': -0.1  # This is a penalty, so it's negative
             }
         else:
             self.reward_weights = reward_weights
 
-        self.strategic_points = strategic_points if strategic_points is not None else CAMPGROUNDS_STRATEGIC_POINTS
+        # Item classnames and their strategic value (used for map control reward)
+        self.high_value_items = high_value_items if high_value_items is not None else HIGH_VALUE_ITEMS
         self.previous_state = None
 
     def calculate_reward(self, current_state, action):
@@ -95,23 +104,44 @@ class RewardSystem:
         return reward
 
     def _calculate_map_control_reward(self, current_state):
-        """Reward for being close to a strategic point."""
-        if not self.strategic_points:
+        """
+        Reward for being close to high-value items.
+
+        Uses dynamic item positions from the game state, weighted by item value.
+        This automatically works on any map without hardcoded coordinates.
+        """
+        items = current_state.get_items()
+        if not items:
             return 0
 
-        agent_pos_dict = current_state.get_agent().position
+        agent = current_state.get_agent()
+        if not agent:
+            return 0
+
+        agent_pos_dict = agent.position
         agent_pos = np.array([agent_pos_dict['x'], agent_pos_dict['y'], agent_pos_dict['z']])
 
-        min_dist = float('inf')
-        for point in self.strategic_points:
-            dist = np.linalg.norm(agent_pos - point['pos'])
-            if dist < min_dist:
-                min_dist = dist
+        total_reward = 0
+        for item in items:
+            # Get item name - handle both dict and Item object
+            item_name = item.name if hasattr(item, 'name') else item.get('name', '')
+            item_value = self.high_value_items.get(item_name, 0)
 
-        # Reward for being closer to the nearest strategic point.
-        # The smaller the distance, the higher the reward.
-        # We add 1 to avoid division by zero and scale it.
-        return 1000 / (min_dist + 1)
+            if item_value > 0:
+                # Get item position
+                if hasattr(item, 'position'):
+                    item_pos_dict = item.position
+                else:
+                    item_pos_dict = item.get('position', {'x': 0, 'y': 0, 'z': 0})
+
+                item_pos = np.array([item_pos_dict['x'], item_pos_dict['y'], item_pos_dict['z']])
+                dist = np.linalg.norm(agent_pos - item_pos)
+
+                # Reward inversely proportional to distance, scaled by item value
+                # Higher value items give more reward for being near them
+                total_reward += (item_value / (dist + 100))
+
+        return total_reward
 
     def _calculate_health_penalty(self, current_state):
         """Penalty for taking damage."""

@@ -11,6 +11,7 @@ DEFAULT_WEAPON_MAP = {
     "8": "BFG", "9": "Grappling Hook"
 }
 
+
 class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
@@ -27,6 +28,20 @@ class ql_agent_plugin(minqlx.Plugin):
         self.command_channel = 'ql:agent:command'
         self.admin_command_channel = 'ql:admin:command'
         self.game_state_channel = 'ql:game:state'
+
+        # Track current input state for the agent (button simulation)
+        # These persist across frames until changed
+        self.agent_inputs = {
+            'forward': False,
+            'back': False,
+            'left': False,
+            'right': False,
+            'jump': False,
+            'crouch': False,
+            'attack': False,
+        }
+        # View angle deltas to apply each frame
+        self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
 
         self.add_hook("server_frame", self.handle_server_frame)
 
@@ -53,25 +68,42 @@ class ql_agent_plugin(minqlx.Plugin):
                 self.handle_admin_command(message['data'])
 
     def handle_agent_command(self, command_data):
+        """
+        Handles agent commands using button simulation for realistic physics.
+        Movement commands set button states that are applied each server frame.
+        """
         try:
             data = json.loads(command_data)
             command = data.get('command')
-            agent_player = self.get_agent_player()
-            if not agent_player:
-                return
 
-            if command == 'move':
-                agent_player.set_velocity((data['forward'], data['right'], data['up']))
+            if command == 'input':
+                # New unified input command - sets all button states at once
+                # Expected format: {"command": "input", "forward": 1, "back": 0, "left": 0, "right": 1, ...}
+                self.agent_inputs['forward'] = bool(data.get('forward', 0))
+                self.agent_inputs['back'] = bool(data.get('back', 0))
+                self.agent_inputs['left'] = bool(data.get('left', 0))
+                self.agent_inputs['right'] = bool(data.get('right', 0))
+                self.agent_inputs['jump'] = bool(data.get('jump', 0))
+                self.agent_inputs['crouch'] = bool(data.get('crouch', 0))
+                self.agent_inputs['attack'] = bool(data.get('attack', 0))
+                # View deltas are applied incrementally each frame
+                self.agent_view_delta['pitch'] = float(data.get('pitch_delta', 0.0))
+                self.agent_view_delta['yaw'] = float(data.get('yaw_delta', 0.0))
+
             elif command == 'look':
-                agent_player.set_view_angles((data['pitch'], data['yaw'], data['roll']))
-            elif command == 'attack':
-                minqlx.command(f"cmd {agent_player.id} +attack; wait; -attack")
-            elif command == 'use':
-                agent_player.use(data['item'])
+                # Set view angle deltas (degrees per frame)
+                self.agent_view_delta['pitch'] = float(data.get('pitch', 0.0))
+                self.agent_view_delta['yaw'] = float(data.get('yaw', 0.0))
+
             elif command == 'weapon_select':
-                agent_player.weapon(data['weapon'])
+                agent_player = self.get_agent_player()
+                if agent_player:
+                    weapon = data.get('weapon')
+                    if weapon:
+                        minqlx.command(f"cmd {agent_player.id} weapon {weapon}")
+
             elif command == 'say':
-                minqlx.command(f"say {data['message']}")
+                minqlx.command(f"say {data.get('message', '')}")
 
         except Exception as e:
             minqlx.log_error(f"Error handling agent command: {e}")
@@ -158,16 +190,78 @@ class ql_agent_plugin(minqlx.Plugin):
             'spawn_time': item.spawnTime
         }
 
+    def _apply_agent_inputs(self, agent_player):
+        """
+        Applies the current input state to the agent using user_cmd injection.
+        This simulates actual button presses for realistic physics (strafe jumping, etc).
+        """
+        if not agent_player or not agent_player.is_alive:
+            return
+
+        try:
+            # Build the user_cmd for this frame
+            # In Quake, movement is controlled via forwardmove, rightmove, upmove
+            # Each ranges from -127 to 127
+            forwardmove = 0
+            rightmove = 0
+            upmove = 0
+
+            if self.agent_inputs['forward']:
+                forwardmove = 127
+            elif self.agent_inputs['back']:
+                forwardmove = -127
+
+            if self.agent_inputs['right']:
+                rightmove = 127
+            elif self.agent_inputs['left']:
+                rightmove = -127
+
+            if self.agent_inputs['jump']:
+                upmove = 127
+            elif self.agent_inputs['crouch']:
+                upmove = -127
+
+            # Apply movement via user_cmd
+            # Note: This uses minqlx's player.user_cmd interface
+            agent_player.user_cmd.forwardmove = forwardmove
+            agent_player.user_cmd.rightmove = rightmove
+            agent_player.user_cmd.upmove = upmove
+
+            # Apply attack button
+            if self.agent_inputs['attack']:
+                agent_player.user_cmd.buttons |= 1  # +attack is bit 0
+            else:
+                agent_player.user_cmd.buttons &= ~1
+
+            # Apply view angle changes (incremental)
+            if self.agent_view_delta['pitch'] != 0 or self.agent_view_delta['yaw'] != 0:
+                current_angles = agent_player.view_angles
+                new_pitch = current_angles[0] + self.agent_view_delta['pitch']
+                new_yaw = current_angles[1] + self.agent_view_delta['yaw']
+                # Clamp pitch to valid range
+                new_pitch = max(-89.0, min(89.0, new_pitch))
+                # Wrap yaw to [-180, 180]
+                while new_yaw > 180:
+                    new_yaw -= 360
+                while new_yaw < -180:
+                    new_yaw += 360
+                agent_player.set_view_angles((new_pitch, new_yaw, current_angles[2]))
+
+        except Exception as e:
+            minqlx.log_error(f"Error applying agent inputs: {e}")
+
     def handle_server_frame(self):
-        """Called every server frame to publish the game state."""
+        """Called every server frame to apply inputs and publish the game state."""
         try:
             agent_player = self.get_agent_player()
             if not agent_player:
                 return
 
-            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != self.agent_steam_id]
+            # Apply the agent's button inputs for this frame (physics simulation)
+            self._apply_agent_inputs(agent_player)
 
-            # minqlx.items() returns all item entities in the game.
+            # Collect and publish game state
+            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != self.agent_steam_id]
             items = [self._serialize_item(item) for item in minqlx.items()]
 
             game_state = {
@@ -176,8 +270,8 @@ class ql_agent_plugin(minqlx.Plugin):
                 'items': items,
                 'game_in_progress': self.game.state == "in_progress",
                 'game_type': self.game.type_short,
+                'map_name': self.game.map,  # Include map name for dynamic config
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
         except Exception as e:
-            # Using minqlx.log_error to log the exception to the Quake Live console.
             minqlx.log_error(f"Error in handle_server_frame: {e}")

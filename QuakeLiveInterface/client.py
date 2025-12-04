@@ -50,25 +50,48 @@ class QuakeLiveClient:
         """Sends an administrative command to the server."""
         self.send_command(self.admin_command_channel, command, args)
 
-    # Movement commands:
-    def move(self, forward, right, up):
-        self.send_agent_command('move', {'forward': forward, 'right': right, 'up': up})
+    # Unified input command - sets all button states at once for physics simulation
+    def send_input(self, forward=False, back=False, left=False, right=False,
+                   jump=False, crouch=False, attack=False, pitch_delta=0.0, yaw_delta=0.0):
+        """
+        Sends a unified input command with all button states and view deltas.
 
-    def look(self, pitch, yaw, roll):
-        self.send_agent_command('look', {'pitch': pitch, 'yaw': yaw, 'roll': roll})
+        This simulates actual button presses for realistic Quake physics,
+        allowing the agent to learn strafe jumping and other advanced movement.
 
-    # Combat commands:
-    def attack(self):
-        self.send_agent_command('attack')
+        Args:
+            forward: Hold +forward button
+            back: Hold +back button
+            left: Hold +moveleft button
+            right: Hold +moveright button
+            jump: Hold +jump button
+            crouch: Hold +crouch button
+            attack: Hold +attack button
+            pitch_delta: View pitch change in degrees per frame
+            yaw_delta: View yaw change in degrees per frame
+        """
+        self.send_agent_command('input', {
+            'forward': int(forward),
+            'back': int(back),
+            'left': int(left),
+            'right': int(right),
+            'jump': int(jump),
+            'crouch': int(crouch),
+            'attack': int(attack),
+            'pitch_delta': pitch_delta,
+            'yaw_delta': yaw_delta,
+        })
 
-    def use_item(self, item_name):
-        self.send_agent_command('use', {'item': item_name})
+    def look(self, pitch_delta, yaw_delta):
+        """Sets view angle deltas (degrees per frame)."""
+        self.send_agent_command('look', {'pitch': pitch_delta, 'yaw': yaw_delta})
 
     def select_weapon(self, weapon_name):
+        """Selects a weapon by name."""
         self.send_agent_command('weapon_select', {'weapon': weapon_name})
 
-    # Communication commands:
     def say(self, message):
+        """Sends a chat message."""
         self.send_agent_command('say', {'message': message})
 
     # Demo recording commands

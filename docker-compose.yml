@@ -1,0 +1,63 @@
+version: '3.8'
+
+# QuakeLiveInterface Docker Stack
+# Run: docker-compose up -d
+# Then: python agents/random_agent.py
+
+services:
+  # The Game Server (Headless Quake Live with minqlx)
+  quake-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: ql-server
+    ports:
+      - "27960:27960/udp"   # Game port
+      - "27960:27960/tcp"   # RCON port
+    environment:
+      - QLX_REDIS_ADDRESS=redis
+      - QLX_REDIS_PORT=6379
+      - QLX_REDIS_DATABASE=0
+      - QLX_AGENT_STEAM_ID=${AGENT_STEAM_ID:-76561198000000000}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Hot-reload plugins during development
+      - ./minqlx-plugin:/home/steam/ql/minqlx-plugins/custom:ro
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  # Redis - The communication bridge between server and Python client
+  redis:
+    image: redis:7-alpine
+    container_name: ql-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Optional: Visualizer service (requires X11 forwarding or VNC)
+  # Uncomment if you want to run visualizer in container
+  # visualizer:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.client
+  #   container_name: ql-visualizer
+  #   environment:
+  #     - DISPLAY=${DISPLAY:-:0}
+  #     - REDIS_HOST=redis
+  #   volumes:
+  #     - /tmp/.X11-unix:/tmp/.X11-unix:ro
+  #   depends_on:
+  #     - redis
+  #   command: python visualizer.py --host redis
+
+networks:
+  default:
+    name: quakelive-net

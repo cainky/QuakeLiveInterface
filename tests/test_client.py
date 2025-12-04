@@ -23,15 +23,24 @@ def test_send_admin_command(mock_redis_connection):
 
     mock_redis_connection.publish.assert_called_with('ql:admin:command', '{"command": "restart_game"}')
 
-def test_move_command(mock_redis_connection):
-    """Tests the move command."""
+def test_send_input_command(mock_redis_connection):
+    """Tests the unified input command with button simulation."""
     client = QuakeLiveClient()
-    client.move(1, -1, 0)
+    client.send_input(forward=True, right=True, attack=True, yaw_delta=2.5)
 
-    mock_redis_connection.publish.assert_called_with(
-        'ql:agent:command',
-        '{"command": "move", "forward": 1, "right": -1, "up": 0}'
-    )
+    # Verify the input command was sent with correct parameters
+    mock_redis_connection.publish.assert_called()
+    call_args = mock_redis_connection.publish.call_args
+    assert call_args[0][0] == 'ql:agent:command'
+    import json
+    payload = json.loads(call_args[0][1])
+    assert payload['command'] == 'input'
+    assert payload['forward'] == 1
+    assert payload['right'] == 1
+    assert payload['attack'] == 1
+    assert payload['yaw_delta'] == 2.5
+    assert payload['back'] == 0
+    assert payload['left'] == 0
 
 def test_start_demo_recording(mock_redis_connection):
     """Tests starting a demo recording."""

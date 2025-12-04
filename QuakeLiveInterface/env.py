@@ -19,16 +19,32 @@ DEFAULT_WEAPON_LIST = [
     "BFG", "Grappling Hook"
 ]
 
+# View sensitivity: degrees per frame at max input
+VIEW_SENSITIVITY = 5.0  # Max degrees to turn per step
+
+
 class QuakeLiveEnv(gym.Env):
     """
     A Gymnasium environment for Quake Live.
+
+    Action Space (MultiDiscrete):
+        [0] Forward/Back:  0=back, 1=none, 2=forward
+        [1] Left/Right:    0=left, 1=none, 2=right
+        [2] Jump/Crouch:   0=crouch, 1=none, 2=jump
+        [3] Attack:        0=no, 1=yes
+        [4] Look Pitch:    0-10 discretized (-1 to +1, mapped to degrees)
+        [5] Look Yaw:      0-10 discretized (-1 to +1, mapped to degrees)
+
+    This uses button simulation for realistic Quake physics,
+    allowing the agent to learn strafe jumping and advanced movement.
     """
     metadata = {'render.modes': ['human']}
 
     def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0,
                  max_health=200, max_armor=200, map_dims=(4000, 4000, 1000),
                  max_velocity=800, max_ammo=200, num_items=10, num_opponents=3,
-                 max_episode_steps=1000, demo_dir=None, weapon_list=None):
+                 max_episode_steps=1000, demo_dir=None, weapon_list=None,
+                 view_sensitivity=VIEW_SENSITIVITY):
         super(QuakeLiveEnv, self).__init__()
 
         self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
@@ -39,16 +55,11 @@ class QuakeLiveEnv(gym.Env):
         self.step_count = 0
         self.max_episode_steps = max_episode_steps
         self.demo_dir = demo_dir
+        self.view_sensitivity = view_sensitivity
 
-        # Define action and observation space
-        self.action_space = spaces.Dict({
-            "move_forward_back": spaces.Discrete(3),  # 0: back, 1: none, 2: forward
-            "move_right_left": spaces.Discrete(3),  # 0: left, 1: none, 2: right
-            "move_up_down": spaces.Discrete(3),  # 0: down (crouch), 1: none, 2: up (jump)
-            "attack": spaces.Discrete(2), # 0: no, 1: yes
-            "look_pitch": spaces.Box(low=-1.0, high=1.0, shape=(1,)),
-            "look_yaw": spaces.Box(low=-1.0, high=1.0, shape=(1,)),
-        })
+        # MultiDiscrete action space for universal RL compatibility
+        # [forward/back, left/right, jump/crouch, attack, look_pitch, look_yaw]
+        self.action_space = spaces.MultiDiscrete([3, 3, 3, 2, 11, 11])
 
         # Constants for normalization
         self.MAX_HEALTH = max_health
@@ -291,19 +302,40 @@ class QuakeLiveEnv(gym.Env):
 
     def _apply_action(self, action):
         """
-        Applies an action to the game.
+        Applies a MultiDiscrete action to the game using button simulation.
+
+        Action format: [forward_back, left_right, jump_crouch, attack, look_pitch, look_yaw]
+        - forward_back: 0=back, 1=none, 2=forward
+        - left_right:   0=left, 1=none, 2=right
+        - jump_crouch:  0=crouch, 1=none, 2=jump
+        - attack:       0=no, 1=yes
+        - look_pitch:   0-10 (maps to -sensitivity to +sensitivity degrees)
+        - look_yaw:     0-10 (maps to -sensitivity to +sensitivity degrees)
         """
-        # Movement
-        f = action["move_forward_back"] - 1
-        r = action["move_right_left"] - 1
-        u = action["move_up_down"] - 1
-        self.client.move(f, r, u)
+        # Decode movement buttons
+        forward = (action[0] == 2)
+        back = (action[0] == 0)
+        right = (action[1] == 2)
+        left = (action[1] == 0)
+        jump = (action[2] == 2)
+        crouch = (action[2] == 0)
+        attack = (action[3] == 1)
 
-        # Looking
-        pitch = action["look_pitch"][0]
-        yaw = action["look_yaw"][0]
-        self.client.look(pitch, yaw, 0) # Roll is not used
+        # Decode look inputs: 0-10 -> -1 to +1 -> degrees
+        pitch_normalized = (action[4] - 5) / 5.0  # -1 to +1
+        yaw_normalized = (action[5] - 5) / 5.0    # -1 to +1
+        pitch_delta = pitch_normalized * self.view_sensitivity
+        yaw_delta = yaw_normalized * self.view_sensitivity
 
-        # Attack
-        if action["attack"] == 1:
-            self.client.attack()
+        # Send unified input command
+        self.client.send_input(
+            forward=forward,
+            back=back,
+            left=left,
+            right=right,
+            jump=jump,
+            crouch=crouch,
+            attack=attack,
+            pitch_delta=pitch_delta,
+            yaw_delta=yaw_delta
+        )

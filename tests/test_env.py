@@ -35,21 +35,15 @@ def test_env_step(mock_client):
     env = QuakeLiveEnv()
     env.reset()
 
-    # Use a deterministic action to ensure attack is called
-    action = {
-        "move_forward_back": 1,
-        "move_right_left": 1,
-        "move_up_down": 1,
-        "attack": 1,
-        "look_pitch": np.array([0.0]),
-        "look_yaw": np.array([0.0]),
-    }
+    # Use a deterministic MultiDiscrete action
+    # [forward_back, left_right, jump_crouch, attack, look_pitch, look_yaw]
+    # forward=2, none=1, none=1, attack=1, pitch=5 (center), yaw=5 (center)
+    action = np.array([2, 1, 1, 1, 5, 5])
 
     obs, reward, terminated, truncated, info = env.step(action)
 
-    mock_client.move.assert_called()
-    mock_client.look.assert_called()
-    mock_client.attack.assert_called()
+    # Verify send_input was called (unified input command)
+    mock_client.send_input.assert_called()
 
     assert isinstance(obs, np.ndarray)
     assert isinstance(reward, (int, float))

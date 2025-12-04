@@ -56,18 +56,41 @@ class RedisConnection:
 
     def get_message(self, pubsub, timeout: float = 1.0):
         """
-        Gets a message from a subscribed channel.
+        Gets the latest message from a subscribed channel, discarding stale ones.
+
+        This drains the message queue and returns only the newest message,
+        ensuring the client always reacts to the current game state rather
+        than processing outdated frames.
+
         Args:
             pubsub: The pubsub object returned by subscribe().
-            timeout: The time to wait for a message.
+            timeout: The time to wait for the first message if queue is empty.
         Returns:
-            The message, or None if no message is received within the timeout.
+            The most recent message, or None if no message is received within the timeout.
         """
         try:
+            latest_message = None
+            messages_discarded = 0
+
+            # First, try to get a message with timeout (blocks if queue empty)
             message = pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout)
             if message:
-                logger.debug(f"Received message from channel {message['channel']}: {message['data']}")
-                return message['data']
+                latest_message = message['data']
+
+                # Drain any remaining messages in the queue (non-blocking)
+                while True:
+                    message = pubsub.get_message(ignore_subscribe_messages=True, timeout=0)
+                    if message is None:
+                        break
+                    latest_message = message['data']
+                    messages_discarded += 1
+
+                if messages_discarded > 0:
+                    logger.debug(f"Discarded {messages_discarded} stale messages, using latest")
+
+            if latest_message:
+                logger.debug(f"Returning latest message from queue")
+                return latest_message
             return None
         except redis.exceptions.RedisError as e:
             logger.error(f"Error getting message: {e}")

@@ -28,9 +28,23 @@ class PerformanceTracker:
         """
         Updates the metrics based on the last step.
         This should be called every step of the environment.
+
+        Args:
+            current_state: The current GameState
+            action: MultiDiscrete action array [fwd/back, left/right, jump/crouch, attack, pitch, yaw]
+                   or legacy dict format
         """
-        # Shots fired
-        if action.get('attack') == 1:
+        # Shots fired - handle both MultiDiscrete array and legacy dict format
+        attack_value = 0
+        try:
+            if hasattr(action, '__len__') and len(action) >= 4:
+                attack_value = action[3]  # MultiDiscrete format
+            elif isinstance(action, dict):
+                attack_value = action.get('attack', 0)
+        except (KeyError, IndexError, TypeError):
+            pass
+
+        if attack_value == 1:
             self.shots_fired += 1
 
         if self.previous_state is None:

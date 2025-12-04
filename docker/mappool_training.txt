@@ -1,0 +1,8 @@
+// Training Map Pool
+// These maps are good for RL training (small to medium size)
+campgrounds|ffa
+bloodrun|ffa
+asylum|ffa
+toxicity|ffa
+sinister|duel
+furious heights|duel

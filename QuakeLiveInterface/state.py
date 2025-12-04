@@ -47,6 +47,7 @@ class GameState:
         self.items = []
         self.game_in_progress = False
         self.game_type = None
+        self.map_name = None
         self.map_geometry = None  # This will be loaded once per map
 
     def update_from_redis(self, redis_data: str):
@@ -71,6 +72,7 @@ class GameState:
 
             self.game_in_progress = data.get('game_in_progress')
             self.game_type = data.get('game_type')
+            self.map_name = data.get('map_name')
 
             # Map geometry is loaded separately
             if 'map_geometry' in data:
