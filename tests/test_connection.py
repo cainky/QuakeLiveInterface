@@ -11,7 +11,11 @@ class TestRedisConnection(unittest.TestCase):
         mock_redis_instance = MagicMock()
         mock_redis.return_value = mock_redis_instance
         conn = RedisConnection()
-        mock_redis.assert_called_once_with(host='localhost', port=6379, db=0, decode_responses=True)
+        # Check that Redis was called with expected parameters (including timeouts)
+        mock_redis.assert_called_once_with(
+            host='localhost', port=6379, db=0, decode_responses=True,
+            socket_connect_timeout=5.0, socket_timeout=5.0
+        )
         mock_redis_instance.ping.assert_called_once()
         self.assertIsNotNone(conn)
 

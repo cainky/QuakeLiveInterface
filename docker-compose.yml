@@ -1,35 +1,12 @@
-version: '3.8'
-
-# QuakeLiveInterface Docker Stack
-# Run: docker-compose up -d
-# Then: python agents/random_agent.py
+# QuakeLiveInterface - Full Stack
+#
+# Usage:
+#   docker-compose up -d
+#   poetry run python visualizer.py
+#   poetry run python agents/random_agent.py
+#   Connect to localhost:27960 in Quake Live
 
 services:
-  # The Game Server (Headless Quake Live with minqlx)
-  quake-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    container_name: ql-server
-    ports:
-      - "27960:27960/udp"   # Game port
-      - "27960:27960/tcp"   # RCON port
-    environment:
-      - QLX_REDIS_ADDRESS=redis
-      - QLX_REDIS_PORT=6379
-      - QLX_REDIS_DATABASE=0
-      - QLX_AGENT_STEAM_ID=${AGENT_STEAM_ID:-76561198000000000}
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      # Hot-reload plugins during development
-      - ./minqlx-plugin:/home/steam/ql/minqlx-plugins/custom:ro
-    restart: unless-stopped
-    stdin_open: true
-    tty: true
-
-  # Redis - The communication bridge between server and Python client
   redis:
     image: redis:7-alpine
     container_name: ql-redis
@@ -42,21 +19,26 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Optional: Visualizer service (requires X11 forwarding or VNC)
-  # Uncomment if you want to run visualizer in container
-  # visualizer:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.client
-  #   container_name: ql-visualizer
-  #   environment:
-  #     - DISPLAY=${DISPLAY:-:0}
-  #     - REDIS_HOST=redis
-  #   volumes:
-  #     - /tmp/.X11-unix:/tmp/.X11-unix:ro
-  #   depends_on:
-  #     - redis
-  #   command: python visualizer.py --host redis
+  quake-server:
+    image: jamesla/quakelive:latest
+    container_name: ql-server
+    ports:
+      - "27960:27960/udp"
+      - "27960:27960/tcp"
+    volumes:
+      - ./minqlx-plugin/ql_agent_plugin.py:/qlds/minqlx-plugins/ql_agent_plugin.py:ro
+    environment:
+      - ACCESS=76561197984141695|admin
+      - QLX_REDISADDRESS=redis
+      - QLX_PLUGINS=plugin_manager, essentials, motd, permission, ban, silence, clan, names, log, workshop, ql_agent_plugin
+      - QLX_OWNER=76561197984141695
+      - QLX_AGENTSTEAMID=76561197984141695
+      - SERVER_CFG=set sv_hostname AgentTraining; set g_gametype 0; set sv_maxclients 8; set fraglimit 0; set timelimit 0; set g_inactivity 0; set qlx_redisAddress redis; set qlx_owner 76561197984141695; set qlx_agentSteamId 76561197984141695; set qlx_plugins "plugin_manager, essentials, ql_agent_plugin"
+      - MAP_POOL=campgrounds|ffa
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
 networks:
   default:

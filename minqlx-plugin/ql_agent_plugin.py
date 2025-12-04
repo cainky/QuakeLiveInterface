@@ -16,11 +16,11 @@ class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
 
-        # Configuration
-        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", "some_steam_id")
-        self.redis_host = self.get_cvar("qlx_redisAddress", "localhost")
-        self.redis_port = int(self.get_cvar("qlx_redisPort", 6379))
-        self.redis_db = int(self.get_cvar("qlx_redisDatabase", 0))
+        # Configuration - get_cvar returns None if not set
+        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", str) or "76561197984141695"
+        self.redis_host = self.get_cvar("qlx_redisAddress", str) or "localhost"
+        self.redis_port = int(self.get_cvar("qlx_redisPort", str) or "6379")
+        self.redis_db = int(self.get_cvar("qlx_redisDatabase", str) or "0")
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
         self._load_weapon_map()
 
@@ -43,7 +43,7 @@ class ql_agent_plugin(minqlx.Plugin):
         # View angle deltas to apply each frame
         self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
 
-        self.add_hook("server_frame", self.handle_server_frame)
+        self.add_hook("frame", self.handle_server_frame)
 
         self.agent_command_thread = threading.Thread(target=self.listen_for_agent_commands)
         self.agent_command_thread.daemon = True
@@ -106,7 +106,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 minqlx.command(f"say {data.get('message', '')}")
 
         except Exception as e:
-            minqlx.log_error(f"Error handling agent command: {e}")
+            print(f"Error handling agent command: {e}")
 
     def handle_admin_command(self, command_data):
         try:
@@ -114,18 +114,18 @@ class ql_agent_plugin(minqlx.Plugin):
             command = data.get('command')
 
             if command == 'restart_game':
-                minqlx.log_info("Restarting game via admin command.")
+                print("Restarting game via admin command.")
                 minqlx.command("restart")
             elif command == 'start_demo_record':
                 filename = data.get('filename', 'agent_demo')
-                minqlx.log_info(f"Starting demo recording: {filename}")
+                print(f"Starting demo recording: {filename}")
                 minqlx.command(f"record {filename}")
             elif command == 'stop_demo_record':
-                minqlx.log_info("Stopping demo recording.")
+                print("Stopping demo recording.")
                 minqlx.command("stoprecord")
 
         except Exception as e:
-            minqlx.log_error(f"Error handling admin command: {e}")
+            print(f"Error handling admin command: {e}")
 
     def get_agent_player(self):
         """Finds the player object for the agent."""
@@ -140,12 +140,12 @@ class ql_agent_plugin(minqlx.Plugin):
         if weapon_map_json:
             try:
                 self.weapon_map = json.loads(weapon_map_json)
-                minqlx.log_info("Loaded custom weapon map from cvar.")
+                print("Loaded custom weapon map from cvar.")
             except json.JSONDecodeError:
-                minqlx.log_error("Invalid JSON in qlx_weaponMapJson cvar. Falling back to default weapon map.")
+                print("Invalid JSON in qlx_weaponMapJson cvar. Falling back to default weapon map.")
                 self.weapon_map = DEFAULT_WEAPON_MAP
         else:
-            minqlx.log_info("Using default weapon map.")
+            print("Using default weapon map.")
             self.weapon_map = DEFAULT_WEAPON_MAP
 
     def _serialize_player(self, player):
@@ -248,7 +248,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 agent_player.set_view_angles((new_pitch, new_yaw, current_angles[2]))
 
         except Exception as e:
-            minqlx.log_error(f"Error applying agent inputs: {e}")
+            print(f"Error applying agent inputs: {e}")
 
     def handle_server_frame(self):
         """Called every server frame to apply inputs and publish the game state."""
@@ -274,4 +274,4 @@ class ql_agent_plugin(minqlx.Plugin):
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
         except Exception as e:
-            minqlx.log_error(f"Error in handle_server_frame: {e}")
+            print(f"Error in handle_server_frame: {e}")
