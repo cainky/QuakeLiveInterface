@@ -3,6 +3,8 @@ import redis
 import json
 import threading
 import time
+import os
+import sys
 
 # Default weapon map, used as a fallback
 DEFAULT_WEAPON_MAP = {
@@ -16,12 +18,15 @@ class ql_agent_plugin(minqlx.Plugin):
     def __init__(self):
         super().__init__()
 
-        # Configuration - get_cvar returns None if not set
-        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", str) or "76561197984141695"
-        self.redis_host = self.get_cvar("qlx_redisAddress", str) or "localhost"
-        self.redis_port = int(self.get_cvar("qlx_redisPort", str) or "6379")
-        self.redis_db = int(self.get_cvar("qlx_redisDatabase", str) or "0")
+        # Configuration - try cvar first, then env var, then default
+        self.agent_steam_id = self.get_cvar("qlx_agentSteamId", str) or os.environ.get("QLX_AGENTSTEAMID", "76561197984141695")
+        self.redis_host = self.get_cvar("qlx_redisAddress", str) or os.environ.get("QLX_REDISADDRESS", "localhost")
+        self.redis_port = int(self.get_cvar("qlx_redisPort", str) or os.environ.get("QLX_REDISPORT", "6379"))
+        self.redis_db = int(self.get_cvar("qlx_redisDatabase", str) or os.environ.get("QLX_REDISDATABASE", "0"))
+
+        minqlx.console_print(f"[ql_agent] Connecting to Redis at {self.redis_host}:{self.redis_port}")
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
+        minqlx.console_print(f"[ql_agent] Redis connection established: {self.redis_conn.ping()}")
         self._load_weapon_map()
 
         # Redis channels
@@ -43,7 +48,9 @@ class ql_agent_plugin(minqlx.Plugin):
         # View angle deltas to apply each frame
         self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
 
-        self.add_hook("frame", self.handle_server_frame)
+        # Use timer-based polling since minqlx doesn't have a frame hook
+        self._running = True
+        self._frame_count = 0
 
         self.agent_command_thread = threading.Thread(target=self.listen_for_agent_commands)
         self.agent_command_thread.daemon = True
@@ -52,6 +59,13 @@ class ql_agent_plugin(minqlx.Plugin):
         self.admin_command_thread = threading.Thread(target=self.listen_for_admin_commands)
         self.admin_command_thread.daemon = True
         self.admin_command_thread.start()
+
+        # Game state publishing thread (runs at ~60Hz)
+        self.state_thread = threading.Thread(target=self._state_loop)
+        self.state_thread.daemon = True
+        self.state_thread.start()
+
+        minqlx.console_print("[ql_agent] Plugin initialized - state publishing thread started")
 
     def listen_for_agent_commands(self):
         pubsub = self.redis_conn.pubsub()
@@ -129,8 +143,9 @@ class ql_agent_plugin(minqlx.Plugin):
 
     def get_agent_player(self):
         """Finds the player object for the agent."""
+        agent_id = int(self.agent_steam_id)
         for player in self.players():
-            if player.steam_id == self.agent_steam_id:
+            if player.steam_id == agent_id:
                 return player
         return None
 
@@ -149,34 +164,49 @@ class ql_agent_plugin(minqlx.Plugin):
             self.weapon_map = DEFAULT_WEAPON_MAP
 
     def _serialize_player(self, player):
-        """Serializes a player object into a dictionary."""
+        """Serializes a player object into a dictionary using available minqlx attributes."""
         if not player:
             return None
 
-        weapons = player.weapons()
-        weapon_data = []
-        for w_num in weapons:
-            weapon_name = self.weapon_map.get(str(w_num), "Unknown")
-            weapon_data.append({"name": weapon_name, "ammo": player.get_weapon_ammo(w_num)})
+        try:
+            # Get player state - contains position, velocity, etc.
+            state = player.state
+            pos = state.position if state else None
+            vel = state.velocity if state else None
 
-        current_weapon_num = player.weapon
-        selected_weapon_data = {
-            "name": self.weapon_map.get(str(current_weapon_num), "Unknown"),
-            "ammo": player.get_weapon_ammo(current_weapon_num)
-        } if current_weapon_num else None
+            # View angles might be on player directly or on state with different names
+            angles = None
+            if hasattr(player, 'view_angles'):
+                angles = player.view_angles
+            elif state and hasattr(state, 'view_angles'):
+                angles = state.view_angles
+            elif state and hasattr(state, 'viewangles'):
+                angles = state.viewangles
 
-        return {
-            'steam_id': player.steam_id,
-            'name': player.name,
-            'health': player.health,
-            'armor': player.armor,
-            'position': {'x': player.position[0], 'y': player.position[1], 'z': player.position[2]},
-            'velocity': {'x': player.velocity[0], 'y': player.velocity[1], 'z': player.velocity[2]},
-            'view_angles': {'pitch': player.view_angles[0], 'yaw': player.view_angles[1], 'roll': player.view_angles[2]},
-            'is_alive': player.is_alive,
-            'weapons': weapon_data,
-            'selected_weapon': selected_weapon_data,
-        }
+            return {
+                'steam_id': player.steam_id,
+                'name': player.clean_name,
+                'health': player.health,
+                'armor': player.armor,
+                'position': {'x': pos.x, 'y': pos.y, 'z': pos.z} if pos else {'x': 0, 'y': 0, 'z': 0},
+                'velocity': {'x': vel.x, 'y': vel.y, 'z': vel.z} if vel else {'x': 0, 'y': 0, 'z': 0},
+                'view_angles': {'pitch': angles[0], 'yaw': angles[1], 'roll': angles[2]} if angles else {'pitch': 0, 'yaw': 0, 'roll': 0},
+                'is_alive': player.is_alive,
+                'team': str(player.team),
+            }
+        except Exception as e:
+            # Fallback with minimal data
+            return {
+                'steam_id': player.steam_id,
+                'name': player.clean_name,
+                'health': getattr(player, 'health', 0),
+                'armor': getattr(player, 'armor', 0),
+                'position': {'x': 0, 'y': 0, 'z': 0},
+                'velocity': {'x': 0, 'y': 0, 'z': 0},
+                'view_angles': {'pitch': 0, 'yaw': 0, 'roll': 0},
+                'is_alive': getattr(player, 'is_alive', False),
+                'error': str(e),
+            }
 
     def _serialize_item(self, item):
         """Serializes an item object into a dictionary."""
@@ -189,6 +219,21 @@ class ql_agent_plugin(minqlx.Plugin):
             'is_available': item.inuse,
             'spawn_time': item.spawnTime
         }
+
+    def _state_loop(self):
+        """Background thread that publishes game state at ~60Hz."""
+        minqlx.console_print("[ql_agent] State loop starting...")
+        while self._running:
+            try:
+                self._frame_count += 1
+                # Write frame count to Redis for debugging
+                if self._frame_count % 100 == 0:
+                    self.redis_conn.set("ql:agent:frame", self._frame_count)
+                self.handle_server_frame()
+                time.sleep(1/60)  # ~60Hz
+            except Exception as e:
+                self.redis_conn.set("ql:agent:error", str(e))
+                time.sleep(0.1)
 
     def _apply_agent_inputs(self, agent_player):
         """
@@ -251,18 +296,33 @@ class ql_agent_plugin(minqlx.Plugin):
             print(f"Error applying agent inputs: {e}")
 
     def handle_server_frame(self):
-        """Called every server frame to apply inputs and publish the game state."""
+        """Called by state loop to apply inputs and publish the game state."""
         try:
+            # Store debug info in Redis every 100 frames
+            if self._frame_count % 100 == 0:
+                players = list(self.players())
+                agent_player_debug = self.get_agent_player()
+                debug = {
+                    'frame': self._frame_count,
+                    'looking_for': self.agent_steam_id,
+                    'looking_for_int': int(self.agent_steam_id),
+                    'players': [(p.steam_id, p.clean_name) for p in players],
+                    'agent_found': agent_player_debug is not None,
+                    'agent_name': agent_player_debug.clean_name if agent_player_debug else None
+                }
+                self.redis_conn.set('ql:agent:debug', json.dumps(debug))
+
             agent_player = self.get_agent_player()
             if not agent_player:
                 return
 
-            # Apply the agent's button inputs for this frame (physics simulation)
-            self._apply_agent_inputs(agent_player)
+            # NOTE: user_cmd injection not available in this minqlx version
+            # self._apply_agent_inputs(agent_player)
 
             # Collect and publish game state
-            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != self.agent_steam_id]
-            items = [self._serialize_item(item) for item in minqlx.items()]
+            agent_id = int(self.agent_steam_id)
+            opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != agent_id]
+            items = []  # minqlx.items() doesn't exist
 
             game_state = {
                 'agent': self._serialize_player(agent_player),
@@ -270,8 +330,18 @@ class ql_agent_plugin(minqlx.Plugin):
                 'items': items,
                 'game_in_progress': self.game.state == "in_progress",
                 'game_type': self.game.type_short,
-                'map_name': self.game.map,  # Include map name for dynamic config
+                'map_name': self.game.map,
             }
-            self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
+            num_recipients = self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
+
+            # Track successful publishes
+            if self._frame_count % 100 == 0:
+                self.redis_conn.set('ql:agent:last_publish', self._frame_count)
+                self.redis_conn.set('ql:agent:recipients', num_recipients)
+                # Also store last game state for debugging
+                self.redis_conn.set('ql:agent:last_state', json.dumps(game_state))
         except Exception as e:
-            print(f"Error in handle_server_frame: {e}")
+            # Store errors to Redis since console_print doesn't work from threads
+            self.redis_conn.set('ql:agent:error', f"Frame {self._frame_count}: {e}")
+            import traceback
+            self.redis_conn.set('ql:agent:traceback', traceback.format_exc())
