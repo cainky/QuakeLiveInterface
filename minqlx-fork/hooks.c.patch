@@ -1,0 +1,23 @@
+--- hooks.c.orig
++++ hooks.c
+@@ -223,6 +223,20 @@
+     if (client_id != -1)
+         KamikazeExplodeDispatcher(client_id, is_used_on_demand);
+ }
++
++void __cdecl My_Touch_Item(gentity_t* ent, gentity_t* other, trace_t* trace) {
++    // Dispatch to Python if the touching entity is a player (has client)
++    if (other->client && ent->item) {
++        int client_id = other->client->ps.clientNum;
++        const char* item_classname = ent->item->classname;
++        if (item_classname) {
++            TouchItemDispatcher(client_id, item_classname);
++        }
++    }
++
++    // Call the original function
++    Touch_Item(ent, other, trace);
++}
+ #endif
+ 
+ // Hook static functions. Can be done before program even runs.

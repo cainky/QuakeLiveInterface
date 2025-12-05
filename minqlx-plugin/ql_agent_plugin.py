@@ -12,6 +12,33 @@ DEFAULT_WEAPON_MAP = {
     "4": "Rocket Launcher", "5": "Lightning Gun", "6": "Railgun", "7": "Plasma Gun",
     "8": "BFG", "9": "Grappling Hook"
 }
+# Static item spawn positions per map (items spawn at fixed locations)
+# Respawn times: Mega=35s, RA/YA=25s, Weapons=5s
+MAP_ITEMS = {
+    'toxicity': [
+        {'name': 'item_armor_body', 'position': {'x': 384, 'y': 576, 'z': 40}, 'respawn': 25},
+        {'name': 'item_health_mega', 'position': {'x': -448, 'y': 64, 'z': -88}, 'respawn': 35},
+        {'name': 'weapon_rocketlauncher', 'position': {'x': -64, 'y': 832, 'z': 8}, 'respawn': 5},
+        {'name': 'weapon_railgun', 'position': {'x': 576, 'y': -192, 'z': -88}, 'respawn': 5},
+        {'name': 'weapon_lightning', 'position': {'x': -512, 'y': 704, 'z': 8}, 'respawn': 5},
+    ],
+    'campgrounds': [
+        {'name': 'item_armor_body', 'position': {'x': 512, 'y': -192, 'z': 96}, 'respawn': 25},
+        {'name': 'item_health_mega', 'position': {'x': -832, 'y': 320, 'z': -56}, 'respawn': 35},
+        {'name': 'weapon_rocketlauncher', 'position': {'x': -64, 'y': -64, 'z': 96}, 'respawn': 5},
+        {'name': 'weapon_railgun', 'position': {'x': -512, 'y': -448, 'z': -56}, 'respawn': 5},
+    ],
+    'bloodrun': [
+        {'name': 'item_armor_body', 'position': {'x': 64, 'y': 1152, 'z': 184}, 'respawn': 25},
+        {'name': 'item_health_mega', 'position': {'x': -448, 'y': 1536, 'z': 56}, 'respawn': 35},
+        {'name': 'weapon_rocketlauncher', 'position': {'x': 448, 'y': 1024, 'z': 56}, 'respawn': 5},
+    ],
+    'aerowalk': [
+        {'name': 'item_armor_body', 'position': {'x': -384, 'y': 1088, 'z': 192}, 'respawn': 25},
+        {'name': 'item_health_mega', 'position': {'x': 192, 'y': 1344, 'z': 32}, 'respawn': 35},
+        {'name': 'weapon_rocketlauncher', 'position': {'x': -64, 'y': 576, 'z': 192}, 'respawn': 5},
+    ],
+}
 
 
 class ql_agent_plugin(minqlx.Plugin):
@@ -220,6 +247,123 @@ class ql_agent_plugin(minqlx.Plugin):
             'spawn_time': item.spawnTime
         }
 
+    def get_items(self):
+        """
+        Scans raw game entities using our custom get_entity_info() function.
+        Falls back to static map data if get_entity_info is not available.
+        """
+        items = []
+
+        # Try our custom get_entity_info() first (added in our minqlx fork)
+        if hasattr(minqlx, 'get_entity_info'):
+            try:
+                for i in range(1024):
+                    ent = minqlx.get_entity_info(i)
+                    if not ent:
+                        continue
+
+                    classname = ent.get('classname', '')
+                    if not classname:
+                        continue
+
+                    if not (classname.startswith('item_') or
+                            classname.startswith('weapon_') or
+                            classname.startswith('ammo_')):
+                        continue
+
+                    in_use = ent.get('in_use', False)
+                    next_think = ent.get('next_think', 0)
+                    is_available = in_use and next_think == 0
+
+                    items.append({
+                        'name': classname,
+                        'position': ent.get('position', {'x': 0, 'y': 0, 'z': 0}),
+                        'is_available': is_available,
+                        'next_think': next_think,
+                        'in_use': in_use
+                    })
+
+                if items:
+                    return items
+            except Exception:
+                pass
+
+        # Fallback to static map data
+        map_name = self.game.map.lower() if self.game else None
+        if not map_name or map_name not in MAP_ITEMS:
+            return []
+
+        return [
+            {
+                'name': item['name'],
+                'position': item['position'],
+                'is_available': True,
+                'spawn_time': 0
+            }
+            for item in MAP_ITEMS[map_name]
+        ]
+    
+    def get_items_OLD(self):
+        """OLD: Entity-based item scanning (doesn't work on most minqlx builds)."""
+        items = []
+        try:
+            if hasattr(minqlx, 'Entity'):
+                # Iterate through entity IDs (QL typically has max 1024 entities)
+                for i in range(1024):
+                    try:
+                        ent = minqlx.Entity(i)
+                        if ent is None or not ent.is_used:
+                            continue
+
+                        classname = ent.classname if hasattr(ent, 'classname') else None
+                        if not classname:
+                            continue
+
+                        # Filter for items: health, armor, weapons, ammo, powerups
+                        if (classname.startswith("item_") or
+                            classname.startswith("weapon_") or
+                            classname.startswith("ammo_") or
+                            classname.startswith("holdable_")):
+
+                            # Get position - try different attribute names
+                            pos = {'x': 0, 'y': 0, 'z': 0}
+                            if hasattr(ent, 'origin'):
+                                origin = ent.origin
+                                pos = {'x': origin[0], 'y': origin[1], 'z': origin[2]}
+                            elif hasattr(ent, 's') and hasattr(ent.s, 'origin'):
+                                origin = ent.s.origin
+                                pos = {'x': origin[0], 'y': origin[1], 'z': origin[2]}
+
+                            # Determine availability
+                            is_available = True
+                            if hasattr(ent, 'is_suspended'):
+                                is_available = not ent.is_suspended
+                            elif hasattr(ent, 'inuse'):
+                                is_available = ent.inuse
+
+                            # Get spawn time if available
+                            spawn_time = 0
+                            if hasattr(ent, 'spawnTime'):
+                                spawn_time = ent.spawnTime
+                            elif hasattr(ent, 'nextthink'):
+                                spawn_time = ent.nextthink
+
+                            items.append({
+                                'name': classname,
+                                'position': pos,
+                                'is_available': is_available,
+                                'spawn_time': spawn_time
+                            })
+                    except (ValueError, RuntimeError):
+                        # Entity doesn't exist or is invalid
+                        continue
+
+        except Exception as e:
+            # Log error but don't crash - return empty list
+            self.redis_conn.set('ql:agent:item_error', str(e))
+
+        return items
+
     def _state_loop(self):
         """Background thread that publishes game state at ~60Hz."""
         minqlx.console_print("[ql_agent] State loop starting...")
@@ -302,13 +446,16 @@ class ql_agent_plugin(minqlx.Plugin):
             if self._frame_count % 100 == 0:
                 players = list(self.players())
                 agent_player_debug = self.get_agent_player()
+                items_debug = self.get_items()
                 debug = {
                     'frame': self._frame_count,
                     'looking_for': self.agent_steam_id,
                     'looking_for_int': int(self.agent_steam_id),
                     'players': [(p.steam_id, p.clean_name) for p in players],
                     'agent_found': agent_player_debug is not None,
-                    'agent_name': agent_player_debug.clean_name if agent_player_debug else None
+                    'agent_name': agent_player_debug.clean_name if agent_player_debug else None,
+                    'item_count': len(items_debug),
+                    'has_get_entity_info': hasattr(minqlx, 'get_entity_info')
                 }
                 self.redis_conn.set('ql:agent:debug', json.dumps(debug))
 
@@ -322,7 +469,7 @@ class ql_agent_plugin(minqlx.Plugin):
             # Collect and publish game state
             agent_id = int(self.agent_steam_id)
             opponents = [self._serialize_player(p) for p in self.players() if p.steam_id != agent_id]
-            items = []  # minqlx.items() doesn't exist
+            items = self.get_items()  # Scan gentities for items
 
             game_state = {
                 'agent': self._serialize_player(agent_player),

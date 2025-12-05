@@ -1,95 +1,69 @@
-# Quake Live Dedicated Server with minqlx for AI Training
-# Based on SteamCMD and minqlx installation
+# Quake Live Server with custom MinQLX (with get_entity_info for item tracking)
+# Uses our forked minqlx with additional Python API for entity introspection
 
-FROM debian:bullseye-slim
+# Use the same base image for building to ensure Python version compatibility
+FROM lucadamico/quakelive-server:latest AS builder
 
-LABEL maintainer="QuakeLiveInterface"
-LABEL description="Quake Live Dedicated Server with minqlx for RL training"
+USER root
 
-# Prevent interactive prompts
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy our custom minqlx fork (with get_entity_info function)
+WORKDIR /build
+COPY minqlx-fork /build/minqlx
+
+# Build minqlx from our source (clean first to avoid stale .o files)
+RUN cd /build/minqlx && make clean || true && make
+
+# Build the Python module
+RUN cd /build/minqlx/python && \
+    zip -r minqlx.zip minqlx
+
+# ==============================================================================
+# Runtime image - extend the working lucadamico image but replace minqlx
+# ==============================================================================
+FROM lucadamico/quakelive-server:latest
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Create steam user (SteamCMD requirement)
-RUN useradd -m -s /bin/bash steam
+# Switch to root to install/replace files
+USER root
 
-# Install dependencies
-RUN dpkg --add-architecture i386 && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        lib32gcc-s1 \
-        lib32stdc++6 \
-        libcurl4:i386 \
-        python3 \
-        python3-pip \
-        python3-dev \
-        git \
-        wget \
-        unzip \
+# Install additional dependencies
+RUN apt-get update && apt-get install -y \
+    redis-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages for minqlx
-RUN pip3 install --no-cache-dir redis
+RUN pip3 install --break-system-packages redis pyzmq hiredis || pip3 install redis pyzmq hiredis
 
-# Switch to steam user
-USER steam
-WORKDIR /home/steam
+# Replace minqlx with our source-built version (with get_entity_info)
+# Note: the server loads minqlx.x64.so via LD_PRELOAD, so copy to both
+COPY --from=builder /build/minqlx/bin/minqlx.x64.so /qlds/minqlx.x64.so
+COPY --from=builder /build/minqlx/bin/minqlx.x64.so /qlds/minqlx.so
+COPY --from=builder /build/minqlx/python/minqlx.zip /qlds/
 
-# Install SteamCMD
-RUN mkdir -p /home/steam/steamcmd && \
-    cd /home/steam/steamcmd && \
-    curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf -
+# Copy our configuration files
+COPY docker/server.cfg /qlds/baseq3/server.cfg
+COPY docker/start.sh /start.sh
+RUN chmod +x /start.sh
 
-# Download Quake Live Dedicated Server (App ID: 349090)
-# Note: This requires accepting the Steam license agreement
-RUN /home/steam/steamcmd/steamcmd.sh \
-    +force_install_dir /home/steam/ql \
-    +login anonymous \
-    +app_update 349090 validate \
-    +quit
+# Set ownership
+RUN chown -R qldsuser:qldsuser /qlds /start.sh
 
-# Create directories for minqlx
-RUN mkdir -p /home/steam/ql/minqlx-plugins/custom
-
-# Download and install minqlx
-# Using the official minqlx release
-RUN cd /home/steam && \
-    git clone https://github.com/MinoMino/minqlx.git && \
-    cd minqlx && \
-    # Copy the minqlx binary and libraries
-    cp -r bin/* /home/steam/ql/ 2>/dev/null || true
-
-# Download minqlx-plugins (standard plugins)
-RUN cd /home/steam/ql && \
-    git clone https://github.com/MinoMino/minqlx-plugins.git minqlx-plugins-repo && \
-    cp -r minqlx-plugins-repo/*.py minqlx-plugins/ 2>/dev/null || true
-
-# Copy our custom agent plugin
-COPY --chown=steam:steam minqlx-plugin/ql_agent_plugin.py /home/steam/ql/minqlx-plugins/
-
-# Create server configuration directory
-RUN mkdir -p /home/steam/.quakelive/27960/baseq3
-
-# Copy server configuration
-COPY --chown=steam:steam docker/server.cfg /home/steam/.quakelive/27960/baseq3/server.cfg
+# Switch to non-root user
+USER qldsuser
 
 # Expose ports
-EXPOSE 27960/udp
-EXPOSE 27960/tcp
+EXPOSE 27960/udp 27960/tcp
 
-# Set working directory
-WORKDIR /home/steam/ql
+# Mount point for plugins
+VOLUME ["/qlds/minqlx_plugins"]
 
-# Environment variables for configuration
-ENV QLX_OWNER=""
-ENV QLX_REDIS_ADDRESS="redis"
-ENV QLX_REDIS_PORT="6379"
-ENV QLX_REDIS_DATABASE="0"
-ENV QLX_AGENT_STEAM_ID="76561198000000000"
-
-# Start script that applies environment config and runs server
-COPY --chown=steam:steam docker/start.sh /home/steam/start.sh
-RUN chmod +x /home/steam/start.sh
-
-ENTRYPOINT ["/home/steam/start.sh"]
+WORKDIR /qlds
+ENTRYPOINT ["/start.sh"]

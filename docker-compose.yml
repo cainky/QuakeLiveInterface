@@ -1,9 +1,8 @@
-# QuakeLiveInterface - Full Stack
+# QuakeLiveInterface - Full Stack with Custom MinQLX Build
 #
 # Usage:
-#   docker-compose up -d
-#   poetry run python visualizer.py
-#   poetry run python agents/random_agent.py
+#   docker-compose build   # Build the custom image (first time only)
+#   docker-compose up -d   # Start the stack
 #   Connect to localhost:27960 in Quake Live
 
 services:
@@ -20,21 +19,21 @@ services:
     restart: unless-stopped
 
   quake-server:
-    image: jamesla/quakelive:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: quakelive-agent:latest
     container_name: ql-server
     ports:
       - "27960:27960/udp"
       - "27960:27960/tcp"
     volumes:
-      - ./minqlx-plugin/ql_agent_plugin.py:/qlds/minqlx-plugins/ql_agent_plugin.py:ro
+      - ./minqlx-plugin:/qlds/minqlx_plugins:ro
     environment:
-      - ACCESS=76561197984141695|admin
       - QLX_REDISADDRESS=redis
-      - QLX_PLUGINS=plugin_manager, essentials, motd, permission, ban, silence, clan, names, log, workshop, ql_agent_plugin
       - QLX_OWNER=76561197984141695
       - QLX_AGENTSTEAMID=76561197984141695
-      - SERVER_CFG=set sv_hostname AgentTraining; set g_gametype 1; set sv_maxclients 2; set fraglimit 0; set timelimit 0; set g_inactivity 0; set qlx_redisAddress redis; set qlx_owner 76561197984141695; set qlx_agentSteamId 76561197984141695; set qlx_plugins "plugin_manager, essentials, ql_agent_plugin"
-      - MAP_POOL=toxicity|duel
+      - MAP=campgrounds
     depends_on:
       redis:
         condition: service_healthy
