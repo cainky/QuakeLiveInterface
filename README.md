@@ -5,6 +5,14 @@ QuakeLiveInterface is a Python library designed to provide a comprehensive, obje
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL3-yellow.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 
+## What's New
+
+This project includes a **custom fork of minqlx** with C-level entity introspection:
+
+- **`get_entity_info(entity_id)`** - Direct access to game entities from Python
+- **Reliable item tracking** - Query item spawn states, positions, and respawn timers
+- **Docker-based build system** - Compiles minqlx from source with our custom patches
+
 ## Quick Start
 
 ```bash
@@ -41,11 +49,12 @@ A minqlx plugin extracts game state at ~60Hz and publishes to Redis. Subscribe t
 ## Features
 
 - **Real-time Game State**: Position, velocity, health, armor, weapons at ~60Hz
+- **Entity Introspection**: C-level `get_entity_info()` for reliable item/powerup tracking
 - **Bidirectional**: Read state AND send movement/attack commands
 - **Docker Stack**: One command to run Quake Live server + Redis
 - **Gymnasium Compatible**: Optional RL environment wrapper included
+- **2D Visualizer**: Real-time map viewer for debugging agents
 - **Multiple Game Modes**: FFA, Duel, TDM, CTF
-- **Replay Analysis**: Parse demos for offline analysis
 
 ## Game State
 
@@ -54,17 +63,36 @@ Subscribe to `ql:game:state` for real-time JSON:
 ```json
 {
   "agent": {
+    "steam_id": 72561195012232678,
     "name": "Snap",
-    "position": {"x": -328.37, "y": 1615.47, "z": 1276.33},
-    "velocity": {"x": -419.45, "y": 65.81, "z": -133.0},
     "health": 100,
     "armor": 50,
-    "is_alive": true
+    "position": {"x": -328.37, "y": 1615.47, "z": 1276.33},
+    "velocity": {"x": -419.45, "y": 65.81, "z": -133.0},
+    "view_angles": {"pitch": 0.0, "yaw": 90.0, "roll": 0.0},
+    "is_alive": true,
+    "team": "free"
   },
-  "opponents": [...],
-  "items": [...],
-  "map_name": "toxicity",
-  "game_type": "duel"
+  "opponents": [
+    {
+      "steam_id": 72561195012232678,
+      "name": "Anarki",
+      "health": 125,
+      "armor": 100,
+      "position": {"x": 512.0, "y": -128.0, "z": 64.0},
+      "velocity": {"x": 0.0, "y": 0.0, "z": 0.0},
+      "view_angles": {"pitch": 0.0, "yaw": 180.0, "roll": 0.0},
+      "is_alive": true,
+      "team": "free"
+    }
+  ],
+  "items": [
+    {"name": "item_armor_mega", "position": {"x": 0, "y": 0, "z": 0}, "is_available": true, "spawn_time": 0},
+    {"name": "item_health_mega", "position": {"x": -384, "y": 640, "z": 32}, "is_available": false, "spawn_time": 35000}
+  ],
+  "game_in_progress": true,
+  "game_type": "duel",
+  "map_name": "toxicity"
 }
 ```
 
@@ -155,18 +183,25 @@ with open('game_log.jsonl', 'a') as f:
 ```
 QuakeLiveInterface/
 ├── QuakeLiveInterface/       # Python package
-│   ├── env.py               # Gymnasium environment (optional)
+│   ├── env.py               # Gymnasium environment
 │   ├── client.py            # Redis client wrapper
 │   ├── state.py             # Game state parsing
 │   └── rewards.py           # Reward functions for RL
+├── minqlx-fork/              # Custom minqlx with get_entity_info()
+│   ├── dllmain.c            # Entry point and hooks
+│   ├── pyminqlx.c           # Python bindings
+│   └── python_embed.c       # Custom C API extensions
+├── minqlx-plugin/            # Server-side plugin
+│   └── ql_agent_plugin.py   # State extraction & Redis pub/sub
 ├── agents/                   # Example agents
 │   ├── random_agent.py
 │   └── rules_based_agent.py
-├── minqlx-plugin/            # Server-side plugin
-│   └── ql_agent_plugin.py
 ├── tools/
-│   └── test_subscribe.py    # Test Redis connection
+│   ├── test_subscribe.py    # Test Redis connection
+│   └── simulator.py         # Offline game state simulator
+├── tests/                    # Pytest test suite
 ├── docker-compose.yml        # Full stack deployment
+├── Dockerfile.server         # Multi-stage minqlx build
 └── visualizer.py             # 2D map viewer
 ```
 
@@ -181,7 +216,7 @@ QuakeLiveInterface/
 ## Documentation
 
 - **[QUICKSTART.md](QUICKSTART.md)** - Detailed setup guide
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design
+- **[minqlx-fork/README.md](minqlx-fork/README.md)** - Custom minqlx build instructions
 
 ## Troubleshooting
 
@@ -201,6 +236,11 @@ QuakeLiveInterface/
 ```bash
 poetry run pytest
 ```
+
+## Credits
+
+- **[minqlx](https://github.com/MinoMino/minqlx)** by MinoMino - The original minqlx project this fork is based on
+- **[lucadamico/quakelive-server](https://hub.docker.com/r/lucadamico/quakelive-server)** - Docker base image for Quake Live server
 
 ## License
 
