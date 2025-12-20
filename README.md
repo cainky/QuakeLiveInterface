@@ -1,4 +1,5 @@
 # QuakeLiveInterface
+![Quake-Live Logo|%20](https://upload.wikimedia.org/wikipedia/de/3/3b/Quake_Live_Logo.png)
 
 QuakeLiveInterface is a Python library designed to provide a comprehensive, object-oriented interface to a Quake Live game server. It serves as a real-time Python interface for Quake Live, allowing you to extract game state and send commands.
 
