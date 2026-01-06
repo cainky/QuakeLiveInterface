@@ -10,11 +10,18 @@ until redis-cli -h ${QLX_REDISADDRESS:-redis} ping 2>/dev/null; do
 done
 echo "[start.sh] Redis is ready!"
 
+# Clear any stale Redis keys from previous runs
+echo "[start.sh] Clearing stale Redis keys..."
+redis-cli -h ${QLX_REDISADDRESS:-redis} DEL ql:agent:last_state ql:agent:frame ql:agent:debug ql:agent:usercmd 2>/dev/null || true
+
 # Set default map
 MAP=${MAP:-toxicity}
 GAMETYPE=${GAMETYPE:-duel}
+AGENT_BOT=${QLX_AGENTBOTNAME:-anarki}
+BOT_SKILL=${BOT_SKILL:-5}
 
 echo "[start.sh] Starting Quake Live server on map: $MAP ($GAMETYPE)"
+echo "[start.sh] Agent bot: $AGENT_BOT, Skill: $BOT_SKILL"
 
 # Run with minqlx
 # +dedicated 1 enables dedicated server mode

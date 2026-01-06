@@ -33,7 +33,17 @@ services:
       - QLX_REDISADDRESS=redis
       - QLX_OWNER=76561197984141695
       - QLX_AGENTSTEAMID=76561197984141695
+      - QLX_AGENTBOTNAME=anarki
       - MAP=campgrounds
+      - GAMETYPE=duel
+      # ===== ISOLATION TESTING FLAGS =====
+      # Set to "1" to enable, "0" to disable
+      - QL_AGENT_ENABLE=1
+      - QL_AGENT_ENABLE_STATE_LOOP=1
+      - QL_AGENT_ENABLE_SET_USERCMD=1
+      - QL_AGENT_ENABLE_EVENTS=1
+      - QL_AGENT_ENABLE_ADMIN=1
+      - QL_AGENT_ENABLE_COMMANDS=1
     depends_on:
       redis:
         condition: service_healthy
