@@ -6,11 +6,15 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <math.h>
 
 #include "pyminqlx.h"
 #include "quake_common.h"
 #include "patterns.h"
 #include "common.h"
+
+// External flag from hooks.c - true during server spawn/shutdown
+extern qboolean skipFrameDispatcher;
 
 PyObject* client_command_handler = NULL;
 PyObject* server_command_handler = NULL;
@@ -18,6 +22,7 @@ PyObject* client_connect_handler = NULL;
 PyObject* client_loaded_handler = NULL;
 PyObject* client_disconnect_handler = NULL;
 PyObject* frame_handler = NULL;
+PyObject* after_frame_handler = NULL;
 PyObject* custom_command_handler = NULL;
 PyObject* new_game_handler = NULL;
 PyObject* set_configstring_handler = NULL;
@@ -61,6 +66,7 @@ static handler_t handlers[] = {
 		{"client_command", 		&client_command_handler},
 		{"server_command", 		&server_command_handler},
 		{"frame", 				&frame_handler},
+		{"after_frame", 		&after_frame_handler},
 		{"player_connect", 		&client_connect_handler},
 		{"player_loaded", 		&client_loaded_handler},
 		{"player_disconnect", 	&client_disconnect_handler},
@@ -123,6 +129,7 @@ static PyStructSequence_Field player_state_fields[] = {
     {"holdable", "The player's holdable item."},
     {"flight", "A struct sequence with flight parameters."},
     {"is_frozen", "Whether the player is frozen(freezetag)."},
+    {"view_angles", "The player's view angles (pitch, yaw, roll)."},
     {NULL}
 };
 
@@ -764,6 +771,16 @@ static PyObject* PyMinqlx_PlayerState(PyObject* self, PyObject* args) {
 
     PyStructSequence_SetItem(state, 12, PyBool_FromLong(g_entities[client_id].client->ps.pm_type == 4));
 
+    // Add view_angles
+    PyObject* view_angles = PyStructSequence_New(&vector3_type);
+    PyStructSequence_SetItem(view_angles, 0,
+        PyFloat_FromDouble(g_entities[client_id].client->ps.viewangles[0]));
+    PyStructSequence_SetItem(view_angles, 1,
+        PyFloat_FromDouble(g_entities[client_id].client->ps.viewangles[1]));
+    PyStructSequence_SetItem(view_angles, 2,
+        PyFloat_FromDouble(g_entities[client_id].client->ps.viewangles[2]));
+    PyStructSequence_SetItem(state, 13, view_angles);
+
     return state;
 }
 
@@ -799,6 +816,37 @@ static PyObject* PyMinqlx_PlayerStats(PyObject* self, PyObject* args) {
     PyStructSequence_SetItem(stats, 6, PyLong_FromLongLong(g_entities[client_id].client->ps.ping));
 
     return stats;
+}
+
+/*
+ * ================================================================
+ *                          get_game_time
+ * Returns the current game time in milliseconds (level->time).
+ * ================================================================
+ */
+
+static PyObject* PyMinqlx_GetGameTime(PyObject* self, PyObject* args) {
+    if (!level)
+        Py_RETURN_NONE;
+
+    return PyLong_FromLong(level->time);
+}
+
+/*
+ * ================================================================
+ *                          is_game_safe
+ * Returns True if it's safe to access game state, False otherwise.
+ * Python can call this before accessing player data to prevent crashes.
+ * ================================================================
+ */
+static PyObject* PyMinqlx_IsGameSafe(PyObject* self, PyObject* args) {
+    // Check all critical conditions that would make accessing game state unsafe
+    if (skipFrameDispatcher)
+        Py_RETURN_FALSE;
+    if (!qagame || !g_entities || !level || !svs || !svs->clients || !sv_maxclients)
+        Py_RETURN_FALSE;
+
+    Py_RETURN_TRUE;
 }
 
 /*
@@ -867,6 +915,266 @@ static PyObject* PyMinqlx_SetVelocity(PyObject* self, PyObject* args) {
         (float)PyFloat_AsDouble(PyStructSequence_GetItem(new_velocity, 1));
     g_entities[client_id].client->ps.velocity[2] =
         (float)PyFloat_AsDouble(PyStructSequence_GetItem(new_velocity, 2));
+
+    Py_RETURN_TRUE;
+}
+
+/*
+ * ================================================================
+ *                          set_view_angles
+ * ================================================================
+ */
+
+static PyObject* PyMinqlx_SetViewAngles(PyObject* self, PyObject* args) {
+    int client_id;
+    float pitch, yaw, roll;
+
+    if (!PyArg_ParseTuple(args, "ifff:set_view_angles", &client_id, &pitch, &yaw, &roll))
+        return NULL;
+
+    // CRITICAL: Skip during server spawn/shutdown
+    if (skipFrameDispatcher)
+        Py_RETURN_FALSE;
+
+    // CRITICAL: Check all required pointers are valid before accessing
+    if (!qagame || !g_entities || !svs || !svs->clients || !sv_maxclients)
+        Py_RETURN_FALSE;
+
+    if (client_id < 0 || client_id >= sv_maxclients->integer) {
+        PyErr_Format(PyExc_ValueError,
+                     "client_id needs to be a number from 0 to %d.",
+                     sv_maxclients->integer);
+        return NULL;
+    }
+
+    if (!g_entities[client_id].client)
+        Py_RETURN_FALSE;
+
+    // Check client state is active
+    if (svs->clients[client_id].state != CS_ACTIVE)
+        Py_RETURN_FALSE;
+
+    // Clamp pitch to valid range (-89 to 89)
+    if (pitch < -89.0f) pitch = -89.0f;
+    if (pitch > 89.0f) pitch = 89.0f;
+
+    // Wrap yaw to [-180, 180]
+    while (yaw > 180.0f) yaw -= 360.0f;
+    while (yaw < -180.0f) yaw += 360.0f;
+
+    g_entities[client_id].client->ps.viewangles[0] = pitch;
+    g_entities[client_id].client->ps.viewangles[1] = yaw;
+    g_entities[client_id].client->ps.viewangles[2] = roll;
+
+    Py_RETURN_TRUE;
+}
+
+/*
+ * ================================================================
+ *                          set_buttons
+ * ================================================================
+ */
+
+static PyObject* PyMinqlx_SetButtons(PyObject* self, PyObject* args) {
+    int client_id;
+    int buttons;
+
+    if (!PyArg_ParseTuple(args, "ii:set_buttons", &client_id, &buttons))
+        return NULL;
+
+    // CRITICAL: Skip during server spawn/shutdown
+    if (skipFrameDispatcher)
+        Py_RETURN_FALSE;
+
+    // CRITICAL: Check all required pointers are valid before accessing
+    if (!qagame || !g_entities || !svs || !svs->clients || !sv_maxclients)
+        Py_RETURN_FALSE;
+
+    if (client_id < 0 || client_id >= sv_maxclients->integer) {
+        PyErr_Format(PyExc_ValueError,
+                     "client_id needs to be a number from 0 to %d.",
+                     sv_maxclients->integer);
+        return NULL;
+    }
+
+    if (!g_entities[client_id].client)
+        Py_RETURN_FALSE;
+
+    // Check client state is active
+    if (svs->clients[client_id].state != CS_ACTIVE)
+        Py_RETURN_FALSE;
+
+    // Store old buttons for edge detection
+    g_entities[client_id].client->oldbuttons = g_entities[client_id].client->buttons;
+    g_entities[client_id].client->buttons = buttons;
+
+    Py_RETURN_TRUE;
+}
+
+/*
+ * ================================================================
+ *                        apply_movement
+ * Applies movement to a player based on movement inputs.
+ * Calculates velocity from viewangles and movement direction.
+ * Parameters: client_id, forwardmove (-1 to 1), rightmove (-1 to 1), speed
+ * ================================================================
+ */
+
+static PyObject* PyMinqlx_ApplyMovement(PyObject* self, PyObject* args) {
+    int client_id;
+    float forwardmove, rightmove, speed;
+
+    if (!PyArg_ParseTuple(args, "ifff:apply_movement", &client_id, &forwardmove, &rightmove, &speed))
+        return NULL;
+
+    // CRITICAL: Skip during server spawn/shutdown
+    if (skipFrameDispatcher)
+        Py_RETURN_FALSE;
+
+    // CRITICAL: Check all required pointers are valid before accessing
+    if (!qagame || !g_entities || !svs || !svs->clients || !sv_maxclients)
+        Py_RETURN_FALSE;
+
+    if (client_id < 0 || client_id >= sv_maxclients->integer) {
+        PyErr_Format(PyExc_ValueError,
+                     "client_id needs to be a number from 0 to %d.",
+                     sv_maxclients->integer);
+        return NULL;
+    }
+
+    if (!g_entities[client_id].client)
+        Py_RETURN_FALSE;
+
+    // Check client state is active
+    if (svs->clients[client_id].state != CS_ACTIVE)
+        Py_RETURN_FALSE;
+
+    gclient_t* client = g_entities[client_id].client;
+
+    // Get yaw from viewangles (yaw is at index 1)
+    float yaw = client->ps.viewangles[1];
+
+    // Convert to radians
+    float yaw_rad = yaw * 3.14159265f / 180.0f;
+
+    // Calculate forward and right vectors (in the XY plane)
+    float forward_x = cosf(yaw_rad);
+    float forward_y = sinf(yaw_rad);
+    float right_x = sinf(yaw_rad);
+    float right_y = -cosf(yaw_rad);
+
+    // Calculate velocity
+    float vel_x = (forwardmove * forward_x + rightmove * right_x) * speed;
+    float vel_y = (forwardmove * forward_y + rightmove * right_y) * speed;
+
+    // Apply to player velocity (keep Z velocity for jumping/falling)
+    client->ps.velocity[0] = vel_x;
+    client->ps.velocity[1] = vel_y;
+
+    Py_RETURN_TRUE;
+}
+
+/*
+ * ================================================================
+ *                        set_usercmd
+ * Sets the usercmd directly for a player/bot.
+ * This is the definitive way to control bot input as it overrides
+ * the bot AI's generated commands.
+ * Parameters: client_id, forwardmove (-127 to 127), rightmove, upmove,
+ *             pitch (degrees), yaw (degrees), buttons (int)
+ * ================================================================
+ */
+
+// Convert degrees to Quake's fixed-point angle format
+#define ANGLE2SHORT(x) ((int)((x) * 65536.0f / 360.0f) & 65535)
+
+static PyObject* PyMinqlx_SetUsercmd(PyObject* self, PyObject* args) {
+    int client_id;
+    int forwardmove, rightmove, upmove;
+    float pitch, yaw;
+    int buttons;
+
+    if (!PyArg_ParseTuple(args, "iiiiffi:set_usercmd", &client_id,
+                          &forwardmove, &rightmove, &upmove,
+                          &pitch, &yaw, &buttons))
+        return NULL;
+
+    // CRITICAL: Skip during server spawn/shutdown (set by C hooks)
+    // This prevents race conditions during map restart
+    if (skipFrameDispatcher)
+        Py_RETURN_FALSE;
+
+    // CRITICAL: Check all required pointers are valid before accessing
+    // This prevents crashes during map restart/shutdown
+    if (!qagame || !g_entities || !level || !svs || !svs->clients)
+        Py_RETURN_FALSE;
+
+    // Check sv_maxclients is valid before using it
+    if (!sv_maxclients)
+        Py_RETURN_FALSE;
+
+    if (client_id < 0 || client_id >= sv_maxclients->integer) {
+        PyErr_Format(PyExc_ValueError,
+                     "client_id needs to be a number from 0 to %d.",
+                     sv_maxclients->integer);
+        return NULL;
+    }
+
+    // Check entity and client pointers
+    if (!g_entities[client_id].client)
+        Py_RETURN_FALSE;
+
+    // Check client state is active (not spawning/disconnecting)
+    if (svs->clients[client_id].state != CS_ACTIVE)
+        Py_RETURN_FALSE;
+
+    gclient_t* client = g_entities[client_id].client;
+
+    // Clamp movement values to valid range
+    if (forwardmove < -127) forwardmove = -127;
+    if (forwardmove > 127) forwardmove = 127;
+    if (rightmove < -127) rightmove = -127;
+    if (rightmove > 127) rightmove = 127;
+    if (upmove < -127) upmove = -127;
+    if (upmove > 127) upmove = 127;
+
+    // Build a usercmd_t structure for the SV_ClientThink hook
+    usercmd_t cmd;
+    memset(&cmd, 0, sizeof(usercmd_t));
+    cmd.serverTime = level->time;
+    cmd.forwardmove = (char)forwardmove;
+    cmd.rightmove = (char)rightmove;
+    cmd.upmove = (char)upmove;
+    cmd.buttons = buttons;
+
+    // Convert angles to Quake's format (relative to delta_angles)
+    // The actual view angle = cmd.angles + ps.delta_angles
+    // So we need: cmd.angles = desired_angle - delta_angles
+    cmd.angles[0] = ANGLE2SHORT(pitch) - client->ps.delta_angles[0];
+    cmd.angles[1] = ANGLE2SHORT(yaw) - client->ps.delta_angles[1];
+    cmd.angles[2] = 0;
+
+    // Copy current weapon info
+    cmd.weapon = client->ps.weapon;
+    cmd.weaponPrimary = client->ps.weaponPrimary;
+
+    // Set the agent usercmd - this will be applied by My_SV_ClientThink hook (for humans)
+    SetAgentUsercmd(client_id, &cmd);
+
+    // For bots: Also set view angles directly since SV_ClientThink isn't called for them
+    // This ensures bots respond to view angle changes immediately
+    client->ps.viewangles[0] = pitch;
+    client->ps.viewangles[1] = yaw;
+    client->ps.viewangles[2] = 0;
+
+    // Set movement in the persistent command (backup method)
+    client->pers.cmd.forwardmove = (char)forwardmove;
+    client->pers.cmd.rightmove = (char)rightmove;
+    client->pers.cmd.upmove = (char)upmove;
+    client->pers.cmd.buttons = buttons;
+    client->pers.cmd.angles[0] = cmd.angles[0];
+    client->pers.cmd.angles[1] = cmd.angles[1];
+    client->pers.cmd.angles[2] = 0;
 
     Py_RETURN_TRUE;
 }
@@ -1777,10 +2085,22 @@ static PyMethodDef minqlxMethods[] = {
      "Get information about the player's state in the game."},
     {"player_stats", PyMinqlx_PlayerStats, METH_VARARGS,
      "Get some player stats."},
+    {"get_game_time", PyMinqlx_GetGameTime, METH_NOARGS,
+     "Returns the current game time in milliseconds."},
+    {"is_game_safe", PyMinqlx_IsGameSafe, METH_NOARGS,
+     "Returns True if game state can be safely accessed, False otherwise."},
     {"set_position", PyMinqlx_SetPosition, METH_VARARGS,
      "Sets a player's position vector."},
     {"set_velocity", PyMinqlx_SetVelocity, METH_VARARGS,
      "Sets a player's velocity vector."},
+    {"set_view_angles", PyMinqlx_SetViewAngles, METH_VARARGS,
+     "Sets a player's view angles (pitch, yaw, roll)."},
+    {"set_buttons", PyMinqlx_SetButtons, METH_VARARGS,
+     "Sets a player's button state (for attack, etc)."},
+    {"set_usercmd", PyMinqlx_SetUsercmd, METH_VARARGS,
+     "Sets a player's usercmd directly (movement, angles, buttons)."},
+    {"apply_movement", PyMinqlx_ApplyMovement, METH_VARARGS,
+     "Applies movement to a player based on forwardmove, rightmove, and speed."},
     {"noclip", PyMinqlx_NoClip, METH_VARARGS,
      "Sets noclip for a player."},
     {"set_health", PyMinqlx_SetHealth, METH_VARARGS,

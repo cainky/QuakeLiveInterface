@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <dlfcn.h>
 
 #include "patterns.h"
@@ -79,7 +80,8 @@ void __cdecl My_G_InitGame(int levelTime, int randomSeed, int restart) {
 #ifndef NOPY
 void __cdecl My_SV_ExecuteClientCommand(client_t *cl, char *s, qboolean clientOK) {
     char* res = s;
-    if (clientOK && cl->gentity) {
+    // CRITICAL: Check client state before accessing gentity - connecting clients have invalid pointers
+    if (clientOK && cl && cl->state == CS_ACTIVE && cl->gentity && svs && svs->clients) {
         res = ClientCommandDispatcher(cl - svs->clients, s);
         if (!res)
             return;
@@ -97,7 +99,8 @@ void __cdecl My_SV_SendServerCommand(client_t* cl, char* fmt, ...) {
 	va_end(argptr);
 
     char* res = buffer;
-	if (cl && cl->gentity)
+    // CRITICAL: Check client state before accessing gentity - connecting clients have invalid pointers
+	if (cl && cl->state == CS_ACTIVE && cl->gentity && svs && svs->clients)
 		res = ServerCommandDispatcher(cl - svs->clients, buffer);
 	else if (cl == NULL)
 		res = ServerCommandDispatcher(-1, buffer);
@@ -115,7 +118,8 @@ void __cdecl My_SV_ClientEnterWorld(client_t* client, usercmd_t* cmd) {
 	// gentity is NULL if map changed.
 	// state is CS_PRIMED only if it's the first time they connect to the server,
 	// otherwise the dispatcher would also go off when a game starts and such.
-	if (client->gentity != NULL && state == CS_PRIMED) {
+	// CRITICAL: Also verify svs is valid before pointer arithmetic
+	if (client->gentity != NULL && state == CS_PRIMED && svs && svs->clients) {
 		ClientLoadedDispatcher(client - svs->clients);
 	}
 }
@@ -138,7 +142,10 @@ void __cdecl My_SV_SetConfigstring(int index, char* value) {
 }
 
 void __cdecl My_SV_DropClient(client_t* drop, const char* reason) {
-    ClientDisconnectDispatcher(drop - svs->clients, reason);
+    // CRITICAL: Check svs is valid before pointer arithmetic
+    if (svs && svs->clients && drop) {
+        ClientDisconnectDispatcher(drop - svs->clients, reason);
+    }
 
     SV_DropClient(drop, reason);
 }
@@ -166,15 +173,62 @@ void __cdecl My_SV_SpawnServer(char* server, qboolean killBots) {
     NewGameDispatcher(qfalse);
 }
 
+// Global storage for agent usercmd override
+static int agent_client_id = -1;
+static usercmd_t agent_usercmd;
+static int agent_usercmd_set = 0;
+
+// Called from Python to set the usercmd that will be used for the agent
+void SetAgentUsercmd(int client_id, usercmd_t* cmd) {
+    agent_client_id = client_id;
+    memcpy(&agent_usercmd, cmd, sizeof(usercmd_t));
+    agent_usercmd_set = 1;
+}
+
+void ClearAgentUsercmd(void) {
+    agent_usercmd_set = 0;
+}
+
+// Hook for SV_ClientThink - intercepts usercmd before processing
+void __cdecl My_SV_ClientThink(client_t* cl, usercmd_t* cmd) {
+    // Check if this is our agent and we have a usercmd override
+    // CRITICAL: Skip during server transitions and check all pointers before any access
+    if (!skipFrameDispatcher && agent_usercmd_set && svs && svs->clients && sv_maxclients && cl) {
+        // CRITICAL: First validate cl is within svs->clients array bounds BEFORE accessing any members
+        // During client connection, cl might be pointing to uninitialized memory
+        ptrdiff_t client_offset = (char*)cl - (char*)svs->clients;
+        ptrdiff_t client_size = sizeof(client_t);
+
+        // Verify offset is properly aligned (must be exact multiple of client_t size)
+        if (client_offset >= 0 && (client_offset % client_size) == 0) {
+            int client_id = client_offset / client_size;
+
+            // Ensure client_id is valid and this is exactly our agent
+            if (client_id < sv_maxclients->integer && client_id == agent_client_id) {
+                // Now safe to access cl members - verify it's active with valid gentity
+                if (cl->state == CS_ACTIVE && cl->gentity) {
+                    // Replace the usercmd with our agent's command
+                    memcpy(cmd, &agent_usercmd, sizeof(usercmd_t));
+                }
+            }
+        }
+    }
+    SV_ClientThink(cl, cmd);
+}
+
 void  __cdecl My_G_RunFrame(int time) {
     // Dropping frames is probably not a good idea, so we don't allow cancelling.
 
+    // Call FrameDispatcher for Python frame hooks - but only when it's safe
+    // skipFrameDispatcher is set during server spawn/shutdown
     if (!skipFrameDispatcher) {
-        // Skip running frame hooks while game is not initialized
         FrameDispatcher();
     }
 
     G_RunFrame(time);
+
+    // Agent usercmd is now applied via set_usercmd() in Python
+    // The C functions check skipFrameDispatcher before accessing game state
 }
 
 char* __cdecl My_ClientConnect(int clientNum, qboolean firstTime, qboolean isBot) {
@@ -284,6 +338,12 @@ void HookStatic(void) {
     res = Hook((void*)SV_SpawnServer, My_SV_SpawnServer, (void*)&SV_SpawnServer);
     if (res) {
         DebugPrint("ERROR: Failed to hook SV_SpawnServer: %d\n", res);
+        failed = 1;
+    }
+
+    res = Hook((void*)SV_ClientThink, My_SV_ClientThink, (void*)&SV_ClientThink);
+    if (res) {
+        DebugPrint("ERROR: Failed to hook SV_ClientThink: %d\n", res);
         failed = 1;
     }
 

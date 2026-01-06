@@ -225,6 +225,17 @@ def handle_frame():
         pass
 
 
+def handle_after_frame():
+    """Called after G_RunFrame completes. Use this for agent input that needs
+    to be applied after the game logic runs but before the next frame.
+    """
+    try:
+        minqlx.EVENT_DISPATCHERS["after_frame"].dispatch()
+    except:
+        minqlx.log_exception()
+        return True
+
+
 _zmq_warning_issued = False
 _first_game = True
 _ad_round_number = 0
@@ -500,6 +511,7 @@ def register_handlers():
     minqlx.register_handler("client_command", handle_client_command)
     minqlx.register_handler("server_command", handle_server_command)
     minqlx.register_handler("frame", handle_frame)
+    minqlx.register_handler("after_frame", handle_after_frame)
     minqlx.register_handler("new_game", handle_new_game)
     minqlx.register_handler("set_configstring", handle_set_configstring)
     minqlx.register_handler("player_connect", handle_player_connect)

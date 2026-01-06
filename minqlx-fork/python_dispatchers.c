@@ -75,6 +75,20 @@ void FrameDispatcher(void) {
     return;
 }
 
+void AfterFrameDispatcher(void) {
+    if (!after_frame_handler)
+        return; // No registered handler.
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    PyObject* result = PyObject_CallObject(after_frame_handler, NULL);
+
+    Py_XDECREF(result);
+
+    PyGILState_Release(gstate);
+    return;
+}
+
 char* ClientConnectDispatcher(int client_id, int is_bot) {
 	char* ret = NULL;
     static char connect_buf[4096];

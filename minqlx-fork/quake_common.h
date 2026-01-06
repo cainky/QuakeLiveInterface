@@ -1532,6 +1532,7 @@ extern SV_DropClient_ptr SV_DropClient;
 extern Sys_SetModuleOffset_ptr Sys_SetModuleOffset;
 extern SV_SpawnServer_ptr SV_SpawnServer;
 extern Cmd_ExecuteString_ptr Cmd_ExecuteString;
+extern SV_ClientThink_ptr SV_ClientThink;
 // VM functions.
 extern G_RunFrame_ptr G_RunFrame;
 extern G_AddEvent_ptr G_AddEvent;
@@ -1558,6 +1559,7 @@ void __cdecl My_SV_SetConfigstring(int index, char* value);
 void __cdecl My_SV_DropClient(client_t* drop, const char* reason);
 void __cdecl My_Com_Printf(char* fmt, ...);
 void __cdecl My_SV_SpawnServer(char* server, qboolean killBots);
+void __cdecl My_SV_ClientThink(client_t* cl, usercmd_t* cmd);
 // VM replacement functions for hooks.
 void __cdecl My_G_RunFrame(int time);
 void __cdecl My_G_InitGame(int levelTime, int randomSeed, int restart);
@@ -1582,6 +1584,10 @@ void __cdecl PyRcon(void);
 // and it'll take care of redirecting it to Python.
 void __cdecl PyCommand(void);
 void __cdecl RestartPython(void); // "pyrestart"
+
+// Agent usercmd control (for RL bots)
+void SetAgentUsercmd(int client_id, usercmd_t* cmd);
+void ClearAgentUsercmd(void);
 #endif
 
 #endif /* QUAKE_COMMON_H */

@@ -292,6 +292,16 @@ class FrameEventDispatcher(EventDispatcher):
     def dispatch(self):
         return super().dispatch()
 
+class AfterFrameEventDispatcher(EventDispatcher):
+    """Event that triggers after G_RunFrame completes. Use this for agent input
+    that needs to be applied after game logic runs. Cannot be cancelled.
+
+    """
+    name = "after_frame"
+
+    def dispatch(self):
+        return super().dispatch()
+
 class SetConfigstringDispatcher(EventDispatcher):
     """Event that triggers when the server tries to set a configstring. You can
     stop this event and use :func:`minqlx.set_configstring` to modify it, but a
@@ -588,6 +598,7 @@ EVENT_DISPATCHERS.add_dispatcher(CommandDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(ClientCommandDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(ServerCommandDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(FrameEventDispatcher)
+EVENT_DISPATCHERS.add_dispatcher(AfterFrameEventDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(SetConfigstringDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(ChatEventDispatcher)
 EVENT_DISPATCHERS.add_dispatcher(UnloadDispatcher)
