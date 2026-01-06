@@ -21,11 +21,13 @@ class QuakeLiveClient:
 
     def update_game_state(self):
         """
-        Checks for a new game state message from Redis and updates the local game state.
+        Gets the latest game state from Redis and updates the local game state.
+        Uses GET on ql:agent:last_state for reliable polling instead of pubsub.
         """
-        message = self.connection.get_message(self.game_state_pubsub)
-        if message:
-            self.game_state.update_from_redis(message)
+        # Poll the stored state instead of using pubsub (more reliable)
+        state_data = self.connection.get('ql:agent:last_state')
+        if state_data:
+            self.game_state.update_from_redis(state_data)
             return True
         return False
 
@@ -102,6 +104,10 @@ class QuakeLiveClient:
     def stop_demo_recording(self):
         """Stops recording a demo on the server."""
         self.send_admin_command('stop_demo_record')
+
+    def kick_all_bots(self):
+        """Kicks all bots from the server."""
+        self.send_admin_command('kickbots')
 
     # Other getters
     def get_game_state(self):

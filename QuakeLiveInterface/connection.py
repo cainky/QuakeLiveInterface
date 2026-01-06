@@ -162,6 +162,26 @@ class RedisConnection:
             logger.error(f"Error getting message: {e}")
             raise
 
+    def get(self, key: str):
+        """
+        Gets a value from Redis by key.
+
+        Args:
+            key: The key to retrieve.
+        Returns:
+            The value, or None if key doesn't exist.
+        """
+        try:
+            self._ensure_connected()
+            return self.redis.get(key)
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+            logger.warning(f"Get failed, attempting reconnect: {e}")
+            self.reconnect()
+            return self.redis.get(key)
+        except redis.exceptions.RedisError as e:
+            logger.error(f"Error getting key {key}: {e}")
+            raise
+
     def close(self):
         """
         Closes the Redis connection.

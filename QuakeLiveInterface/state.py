@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 class Player:
     """Represents a player in the game."""
-    def __init__(self, steam_id, name, health, armor, position, velocity, view_angles, is_alive, weapons, selected_weapon):
+    def __init__(self, steam_id, name, health, armor, position, velocity, view_angles, is_alive, weapons, selected_weapon, in_fov=True):
         self.steam_id = steam_id
         self.name = name
         self.health = health
@@ -17,6 +17,7 @@ class Player:
         self.is_alive = is_alive
         self.weapons = weapons
         self.selected_weapon = selected_weapon
+        self.in_fov = in_fov  # Whether player is in agent's field of view
 
 
 class Weapon:
@@ -28,10 +29,10 @@ class Weapon:
 
 class Item:
     """Represents an item on the map."""
-    def __init__(self, name, position, spawn_time, is_available):
+    def __init__(self, name, position, time_to_spawn_ms, is_available):
         self.name = name
         self.position = position
-        self.spawn_time = spawn_time
+        self.time_to_spawn_ms = time_to_spawn_ms  # Milliseconds until respawn, 0 if available
         self.is_available = is_available
 
 
@@ -99,14 +100,15 @@ class GameState:
             view_angles=player_data.get('view_angles', {'pitch': 0, 'yaw': 0, 'roll': 0}),
             is_alive=player_data.get('is_alive'),
             weapons=weapons,
-            selected_weapon=selected_weapon
+            selected_weapon=selected_weapon,
+            in_fov=player_data.get('in_fov', True)
         )
 
     def _create_item_from_data(self, item_data):
         return Item(
             name=item_data.get('name'),
             position=item_data.get('position'),
-            spawn_time=item_data.get('spawn_time'),
+            time_to_spawn_ms=item_data.get('time_to_spawn_ms', 0),
             is_available=item_data.get('is_available')
         )
 

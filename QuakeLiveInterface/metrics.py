@@ -1,5 +1,6 @@
 import logging
 import numpy as np
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,16 @@ class PerformanceTracker:
             self.shots_fired += 1
 
         if self.previous_state is None:
-            self.previous_state = current_state
+            self.previous_state = copy.deepcopy(current_state)
             return
 
         prev_agent = self.previous_state.get_agent()
         curr_agent = current_state.get_agent()
+
+        # Safety check - need both agents to compare
+        if prev_agent is None or curr_agent is None:
+            self.previous_state = copy.deepcopy(current_state)
+            return
 
         # Damage taken
         health_diff = prev_agent.health - curr_agent.health
@@ -91,7 +97,7 @@ class PerformanceTracker:
         curr_pos = np.array(list(curr_agent.position.values()))
         self.total_distance_traveled += np.linalg.norm(curr_pos - prev_pos)
 
-        self.previous_state = current_state
+        self.previous_state = copy.deepcopy(current_state)
 
     def log_episode(self, episode_num):
         """Logs the summary of the episode's performance."""

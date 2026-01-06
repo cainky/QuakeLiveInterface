@@ -44,8 +44,20 @@ class QuakeLiveEnv(gym.Env):
                  max_health=200, max_armor=200, map_dims=(4000, 4000, 1000),
                  max_velocity=800, max_ammo=200, num_items=10, num_opponents=3,
                  max_episode_steps=1000, demo_dir=None, weapon_list=None,
-                 view_sensitivity=VIEW_SENSITIVITY):
+                 view_sensitivity=VIEW_SENSITIVITY, obs_mode='oracle',
+                 agent_bot_name=None, agent_bot_skill=5):
+        """
+        Args:
+            obs_mode: Observation mode for opponent visibility.
+                'oracle' - Always include all opponent features (full information)
+                'human' - Mask opponent features when not in agent's FOV (partial observability)
+            agent_bot_name: If set, the agent is a bot that will be re-added after reset.
+            agent_bot_skill: Skill level for the agent bot (1-5).
+        """
         super(QuakeLiveEnv, self).__init__()
+
+        if obs_mode not in ('oracle', 'human'):
+            raise ValueError(f"obs_mode must be 'oracle' or 'human', got '{obs_mode}'")
 
         self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
         self.game_state = GameState()
@@ -56,6 +68,10 @@ class QuakeLiveEnv(gym.Env):
         self.max_episode_steps = max_episode_steps
         self.demo_dir = demo_dir
         self.view_sensitivity = view_sensitivity
+        self.obs_mode = obs_mode
+        self.agent_bot_name = agent_bot_name
+        self.agent_bot_skill = agent_bot_skill
+
 
         # MultiDiscrete action space for universal RL compatibility
         # [forward/back, left/right, jump/crouch, attack, look_pitch, look_yaw]
@@ -114,7 +130,30 @@ class QuakeLiveEnv(gym.Env):
         # Log performance metrics
         self.performance_tracker.log_step(self.game_state, action)
 
-        return obs, reward, terminated, truncated, {}
+        # Build info dict with episode metrics on termination/truncation
+        # Use 'terminal_info' key to avoid VecMonitor overwriting 'episode'
+        info = {}
+        if terminated or truncated:
+            tracker = self.performance_tracker
+            info['terminal_info'] = {
+                'damage_dealt': tracker.damage_dealt,
+                'damage_taken': tracker.damage_taken,
+                'frags': tracker.kills,
+                'deaths': tracker.deaths,
+                'frag_diff': tracker.kills - tracker.deaths,
+                'shots_fired': tracker.shots_fired,
+                'hits': tracker.successful_hits,
+                'accuracy': (tracker.successful_hits / tracker.shots_fired * 100) if tracker.shots_fired > 0 else 0,
+                'health_pickups': tracker.items_collected.get('Health', 0),
+                'armor_pickups': tracker.items_collected.get('Armor', 0),
+                'distance_traveled': tracker.total_distance_traveled,
+            }
+            # Quick validation print
+            logger.info(f"Episode {self.episode_num} end: frags={tracker.kills} deaths={tracker.deaths} "
+                       f"dmg_dealt={tracker.damage_dealt} dmg_taken={tracker.damage_taken} "
+                       f"accuracy={info['terminal_info']['accuracy']:.1f}%")
+
+        return obs, reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None, reset_timeout=15.0):
         """
@@ -145,11 +184,52 @@ class QuakeLiveEnv(gym.Env):
         self.performance_tracker.reset()
         self.game_state = GameState() # Reset game state
 
-        # Send a command to restart the game
-        logger.info(f"Episode {self.episode_num}: Sending command to restart game.")
-        self.client.send_admin_command('restart_game')
+        import time as time_module
 
-        # Wait for the game to restart and for the agent to be alive
+        # First, check current roster before doing anything disruptive
+        self.client.update_game_state()
+        current_state = self.client.get_game_state()
+        num_opponents = len(current_state.get_opponents()) if current_state else 0
+        agent = current_state.get_agent() if current_state else None
+
+        # Log roster for debugging
+        if agent:
+            logger.info(f"Episode {self.episode_num}: Roster check - Agent={agent.name}, Opponents={num_opponents}")
+        else:
+            logger.info(f"Episode {self.episode_num}: No agent found, Opponents={num_opponents}")
+
+        # Only fix roster if it's actually wrong
+        roster_correct = agent is not None and num_opponents == 1
+        if self.agent_bot_name and not roster_correct:
+            logger.info(f"Episode {self.episode_num}: Roster incorrect, fixing (once)...")
+
+            # Kick ALL bots first
+            self.client.send_admin_command('kickbots')
+            time_module.sleep(2.0)
+
+            # Add agent bot
+            logger.info(f"Episode {self.episode_num}: Adding agent bot: {self.agent_bot_name}")
+            self.client.send_admin_command('addbot', {
+                'name': self.agent_bot_name,
+                'skill': self.agent_bot_skill
+            })
+            time_module.sleep(2.0)
+
+            # Add opponent bot (different from agent)
+            opponent_name = 'crash' if self.agent_bot_name.lower() != 'crash' else 'doom'
+            logger.info(f"Episode {self.episode_num}: Adding opponent bot: {opponent_name}")
+            self.client.send_admin_command('addbot', {
+                'name': opponent_name,
+                'skill': self.agent_bot_skill
+            })
+            time_module.sleep(3.0)
+        else:
+            # Roster is fine - just restart the match (fast, no kicks)
+            logger.info(f"Episode {self.episode_num}: Roster OK, restarting match.")
+            self.client.send_admin_command('restart_game')
+            time_module.sleep(1.5)  # Shorter wait since no bot changes
+
+        # Wait for the game to be ready and for the agent to be alive
         start_time = time.time()
         while time.time() - start_time < reset_timeout:
             if self.client.update_game_state():
@@ -219,6 +299,10 @@ class QuakeLiveEnv(gym.Env):
             for i, opp in enumerate(opponents[:self.NUM_OPPONENTS]):
                 start_idx = i * 11
                 end_idx = start_idx + 11
+                # In 'human' mode, only include opponents that are in FOV
+                if self.obs_mode == 'human' and not getattr(opp, 'in_fov', True):
+                    # Opponent not in FOV - leave as zeros (masked)
+                    continue
                 opponent_feats[start_idx:end_idx] = self._get_player_features(opp)
 
 
@@ -286,10 +370,16 @@ class QuakeLiveEnv(gym.Env):
         for i, item in enumerate(items):
             if i >= self.NUM_ITEMS:
                 break
-            pos = self._normalize_pos(item['position'])
-            is_available = 1 if item['is_available'] else 0
-            spawn_time = item['spawn_time'] / 30000.0 # Normalize by 30 seconds
-            features[i*5 : i*5 + 5] = [*pos, is_available, spawn_time]
+            # Handle both Item objects and dicts for backwards compatibility
+            if hasattr(item, 'position'):
+                pos = self._normalize_pos(item.position)
+                is_available = 1 if item.is_available else 0
+                time_to_spawn = getattr(item, 'time_to_spawn_ms', 0) / 30000.0
+            else:
+                pos = self._normalize_pos(item['position'])
+                is_available = 1 if item['is_available'] else 0
+                time_to_spawn = item.get('time_to_spawn_ms', item.get('spawn_time', 0)) / 30000.0
+            features[i*5 : i*5 + 5] = [*pos, is_available, time_to_spawn]
         return features
 
     @staticmethod
