@@ -98,6 +98,8 @@ class QuakeLiveEnv(gym.Env):
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_size,), dtype=np.float32)
 
         self.last_action = None
+        self._consecutive_bad_states = 0  # Track consecutive "terminated" conditions
+        self._BAD_STATE_THRESHOLD = 3     # Require N bad states before terminating
 
     def step(self, action):
         """
@@ -121,7 +123,17 @@ class QuakeLiveEnv(gym.Env):
         self.game_state = new_game_state
 
         # Check if the episode is terminated or truncated
-        terminated = bool(not self.game_state.game_in_progress or not (self.game_state.get_agent() and self.game_state.get_agent().is_alive))
+        # Use consecutive bad state counter to avoid terminating on transient glitches
+        agent = self.game_state.get_agent()
+        bad_state = not self.game_state.game_in_progress or not agent or not agent.is_alive
+
+        if bad_state:
+            self._consecutive_bad_states += 1
+        else:
+            self._consecutive_bad_states = 0
+
+        # Only terminate after N consecutive bad states (avoids transient countdown/respawn)
+        terminated = self._consecutive_bad_states >= self._BAD_STATE_THRESHOLD
         truncated = self.step_count >= self.max_episode_steps
 
         # Get the observation
@@ -182,7 +194,8 @@ class QuakeLiveEnv(gym.Env):
         # Reset trackers and systems
         self.reward_system.reset()
         self.performance_tracker.reset()
-        self.game_state = GameState() # Reset game state
+        self.game_state = GameState()  # Reset game state
+        self._consecutive_bad_states = 0  # Reset termination counter
 
         import time as time_module
 
@@ -229,17 +242,41 @@ class QuakeLiveEnv(gym.Env):
             self.client.send_admin_command('restart_game')
             time_module.sleep(1.5)  # Shorter wait since no bot changes
 
-        # Wait for the game to be ready and for the agent to be alive
+        # Wait for STABLE game state (N consecutive good ticks)
+        # This prevents returning during transient countdown/respawn states
+        STABLE_TICKS_REQUIRED = 5
+        stable_tick_count = 0
+        last_game_time = None
+
         start_time = time.time()
         while time.time() - start_time < reset_timeout:
             if self.client.update_game_state():
                 self.game_state = self.client.get_game_state()
                 agent = self.game_state.get_agent()
-                if self.game_state.game_in_progress and agent and agent.is_alive:
-                    logger.info("Game reset successful. Agent is alive.")
-                    obs = self._get_observation()
-                    return obs, {}
-            time.sleep(0.1) # Avoid busy-waiting
+                opponents = self.game_state.get_opponents()
+                game_time = getattr(self.game_state, 'game_time_ms', 0)
+
+                # Check all stability conditions
+                is_stable = (
+                    self.game_state.game_in_progress and
+                    agent is not None and
+                    agent.is_alive and
+                    len(opponents) >= 1 and
+                    (last_game_time is None or game_time >= last_game_time)
+                )
+
+                if is_stable:
+                    stable_tick_count += 1
+                    if stable_tick_count >= STABLE_TICKS_REQUIRED:
+                        logger.info(f"Game reset successful after {stable_tick_count} stable ticks. Agent is alive.")
+                        obs = self._get_observation()
+                        return obs, {}
+                else:
+                    stable_tick_count = 0  # Reset counter on any instability
+
+                last_game_time = game_time
+
+            time.sleep(0.1)  # ~10Hz check rate
 
         logger.warning(f"Reset timeout ({reset_timeout}s) reached. Environment may not be ready.")
         obs = self._get_observation()

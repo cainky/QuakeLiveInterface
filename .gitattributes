@@ -1,0 +1,15 @@
+# Auto detect text files and normalize line endings
+* text=auto
+
+# Force LF for shell scripts and config files
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.cfg text eol=lf
+
+# Force LF for Python
+*.py text eol=lf
+
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
+*.cmd text eol=crlf
