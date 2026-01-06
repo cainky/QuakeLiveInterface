@@ -227,8 +227,11 @@ void  __cdecl My_G_RunFrame(int time) {
 
     G_RunFrame(time);
 
-    // Agent usercmd is now applied via set_usercmd() in Python
-    // The C functions check skipFrameDispatcher before accessing game state
+    // Call AfterFrameDispatcher AFTER game logic (including bot AI) has run.
+    // This allows Python to override view angles that bot AI may have set.
+    if (!skipFrameDispatcher) {
+        AfterFrameDispatcher();
+    }
 }
 
 char* __cdecl My_ClientConnect(int clientNum, qboolean firstTime, qboolean isBot) {

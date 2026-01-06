@@ -97,14 +97,16 @@ class ql_agent_plugin(minqlx.Plugin):
         if self.ENABLE_STATE_LOOP:
             self.add_hook("frame", self.handle_game_frame)
             minqlx.console_print("[ql_agent] Frame hook registered for state publishing")
+        # Register after_frame hook for agent input control
+        # This runs AFTER G_RunFrame (including bot AI), allowing us to override
+        # any view angles the bot AI may have set
+        self.add_hook("after_frame", self.handle_after_frame)
+        minqlx.console_print("[ql_agent] After-frame hook registered for agent input override")
         # CRITICAL: Start DISABLED - only enable after confirming game is ready
         # This prevents crashes during initial server startup
         self._safe_to_run = False  # Flag to pause state loop during transitions
         self._game_restarting = False  # Flag to block commands during restart
         self._startup_check_count = 0  # Counter for startup safety checks
-        # NOTE: after_frame Python hook disabled - inputs now applied directly in C
-        # after G_RunFrame to avoid Python callback crashes during shutdown.
-        # Python sets usercmd via set_usercmd(), C applies it after G_RunFrame.
 
         # Track current input state for the agent (button simulation)
         # These persist across frames until changed
