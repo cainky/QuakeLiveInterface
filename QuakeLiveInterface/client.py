@@ -19,17 +19,62 @@ class QuakeLiveClient:
         self.game_state_channel = 'ql:game:state'
         self.game_state_pubsub = self.connection.subscribe(self.game_state_channel)
 
-    def update_game_state(self):
+        # Frame synchronization - ensure we only process each server frame once
+        self._last_frame_id = -1
+        self._last_state_time_ms = 0
+
+    def update_game_state(self, timeout_ms=250, require_new_frame=True):
         """
         Gets the latest game state from Redis and updates the local game state.
         Uses GET on ql:agent:last_state for reliable polling instead of pubsub.
+
+        Args:
+            timeout_ms: Maximum time to wait for a new frame (default 250ms)
+            require_new_frame: If True, wait until state_frame_id changes
+
+        Returns:
+            True if state was updated, False on timeout
         """
-        # Poll the stored state instead of using pubsub (more reliable)
-        state_data = self.connection.get('ql:agent:last_state')
-        if state_data:
-            self.game_state.update_from_redis(state_data)
-            return True
-        return False
+        import time
+        start_time = time.time()
+        timeout_sec = timeout_ms / 1000.0
+
+        while True:
+            state_data = self.connection.get('ql:agent:last_state')
+            if state_data:
+                # Parse to check frame_id before full update
+                import json
+                try:
+                    raw_state = json.loads(state_data)
+                    frame_id = raw_state.get('state_frame_id', 0)
+
+                    # If we require a new frame, check if this is different
+                    if require_new_frame and frame_id == self._last_frame_id:
+                        # Same frame, keep waiting (unless timeout)
+                        if time.time() - start_time > timeout_sec:
+                            logger.warning(f"Frame sync timeout: stuck on frame {frame_id}")
+                            return False
+                        time.sleep(0.005)  # 5ms poll interval
+                        continue
+
+                    # New frame (or we don't require new frame)
+                    self._last_frame_id = frame_id
+                    self._last_state_time_ms = raw_state.get('server_time_ms', 0)
+                    self.game_state.update_from_redis(state_data)
+                    return True
+
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse game state JSON")
+                    return False
+
+            # No state data yet
+            if time.time() - start_time > timeout_sec:
+                return False
+            time.sleep(0.005)
+
+    def get_frame_timing(self):
+        """Returns (last_frame_id, last_state_time_ms) for debugging."""
+        return self._last_frame_id, self._last_state_time_ms
 
     def send_command(self, channel, command, args=None):
         """

@@ -231,6 +231,9 @@ class ql_agent_plugin(minqlx.Plugin):
         This is the key hook for agent control. By applying our inputs AFTER
         the bot AI has run, we ensure our desired view angles and movements
         override whatever the bot AI tried to set.
+
+        STATE PUBLISHING: We publish state HERE (after applying inputs) so
+        that the published state reflects OUR view angles, not the bot AI's.
         """
         try:
             # Safety check: don't access players during map change/shutdown
@@ -238,16 +241,74 @@ class ql_agent_plugin(minqlx.Plugin):
             if game is None or game.state not in ('in_progress', 'warmup', 'countdown'):
                 return
 
-            self._frame_count += 1
             if self._frame_count % 60 == 0:
                 self.redis_conn.set('ql:agent:after_frame_called', f'frame={self._frame_count}')
 
             agent_player = self.get_agent_player()
             if agent_player and agent_player.is_alive:
+                # Apply our inputs FIRST (overrides bot AI)
                 self._apply_agent_inputs(agent_player)
+                # Track damage events
+                self._check_damage_events(agent_player)
+
+            # Publish state AFTER applying inputs so it reflects our angles
+            if self._safe_to_run:
+                self._publish_agent_state()
+
         except Exception as e:
             # Don't spam errors every frame, just log to Redis
             self.redis_conn.set('ql:agent:after_frame_error', str(e))
+
+    def _publish_agent_state(self):
+        """Publish game state to Redis. Called from after_frame hook."""
+        try:
+            game = self.game
+            if game is None:
+                return
+
+            agent_player = self.get_agent_player()
+            if not agent_player:
+                return
+
+            agent_data = self._serialize_player(agent_player)
+            agent_id = agent_player.steam_id
+
+            # Serialize opponents with in_fov calculation
+            opponents = []
+            for p in self.players():
+                if p.steam_id != agent_id:
+                    opp_data = self._serialize_player(p)
+                    if opp_data:
+                        if agent_data and 'position' in agent_data and 'position' in opp_data:
+                            opp_data['in_fov'] = self._is_in_fov(
+                                agent_data['position'],
+                                agent_data['view_angles']['yaw'],
+                                opp_data['position']
+                            )
+                        else:
+                            opp_data['in_fov'] = False
+                        opponents.append(opp_data)
+
+            items = self.get_items()
+            server_time_ms = int(time.time() * 1000)
+            game_time_ms = minqlx.get_game_time() if hasattr(minqlx, 'get_game_time') else 0
+
+            game_state = {
+                'agent': agent_data,
+                'opponents': opponents,
+                'items': items,
+                'game_in_progress': game.state in ("in_progress", "warmup", "countdown"),
+                'game_state_raw': game.state,
+                'game_type': game.type_short if hasattr(game, 'type_short') else None,
+                'map_name': game.map if hasattr(game, 'map') else None,
+                'server_time_ms': server_time_ms,
+                'game_time_ms': game_time_ms,
+                'state_frame_id': self._frame_count,  # For debugging sync issues
+            }
+            self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
+            self.redis_conn.set('ql:agent:last_state', json.dumps(game_state))
+        except Exception as e:
+            self.redis_conn.set('ql:agent:publish_error', str(e))
 
     def _check_damage_events(self, agent_player):
         """Check for damage changes and publish damage events."""
@@ -341,6 +402,43 @@ class ql_agent_plugin(minqlx.Plugin):
 
             elif command == 'say':
                 minqlx.command(f"say {data.get('message', '')}")
+
+            elif command == 'set_view_angles':
+                # Direct test command: call minqlx.set_view_angles
+                # This bypasses the normal input->usercmd path for testing
+                # Must run on main thread via delay
+                pitch = float(data.get('pitch', 0.0))
+                yaw = float(data.get('yaw', 0.0))
+                roll = float(data.get('roll', 0.0))
+                # Update our tracked angles so usercmd doesn't fight us
+                self.agent_view_angles['pitch'] = pitch
+                self.agent_view_angles['yaw'] = yaw
+                self.agent_view_initialized = True
+
+                @minqlx.delay(0)
+                def do_set_view_angles():
+                    agent_player = self.get_agent_player()
+                    if agent_player and hasattr(minqlx, 'set_view_angles'):
+                        # Read angles BEFORE setting
+                        state_before = agent_player.state
+                        angles_before = state_before.view_angles if state_before else None
+
+                        result = minqlx.set_view_angles(agent_player.id, pitch, yaw, roll)
+
+                        # Read angles IMMEDIATELY AFTER setting (same frame)
+                        state_after = agent_player.state
+                        angles_after = state_after.view_angles if state_after else None
+
+                        self.redis_conn.set('ql:agent:set_view_angles_result', json.dumps({
+                            'client_id': agent_player.id,
+                            'pitch': pitch,
+                            'yaw': yaw,
+                            'roll': roll,
+                            'result': result,
+                            'before': list(angles_before) if angles_before else None,
+                            'after': list(angles_after) if angles_after else None,
+                        }))
+                do_set_view_angles()
 
         except Exception as e:
             print(f"Error handling agent command: {e}")
@@ -821,12 +919,21 @@ class ql_agent_plugin(minqlx.Plugin):
             if hasattr(minqlx, 'is_game_safe') and not minqlx.is_game_safe():
                 return
             if hasattr(minqlx, 'set_usercmd'):
+                # Read angles BEFORE set_usercmd
+                state_before = agent_player.state
+                yaw_before = state_before.view_angles[1] if state_before and state_before.view_angles else None
+
                 result = minqlx.set_usercmd(
                     client_id,
                     forwardmove, rightmove, upmove,
                     new_pitch, new_yaw,
                     buttons
                 )
+
+                # Read angles IMMEDIATELY AFTER set_usercmd
+                state_after = agent_player.state
+                yaw_after = state_after.view_angles[1] if state_after and state_after.view_angles else None
+
                 # Log usercmd every 10 frames (~6Hz) for debugging visibility
                 if self._frame_count % 10 == 0:
                     self.redis_conn.set('ql:agent:usercmd', json.dumps({
@@ -841,7 +948,9 @@ class ql_agent_plugin(minqlx.Plugin):
                         'tracked_pitch': self.agent_view_angles['pitch'],
                         'tracked_yaw': self.agent_view_angles['yaw'],
                         'delta_pitch': self.agent_view_delta['pitch'],
-                        'delta_yaw': self.agent_view_delta['yaw']
+                        'delta_yaw': self.agent_view_delta['yaw'],
+                        'ps_yaw_before': yaw_before,
+                        'ps_yaw_after': yaw_after
                     }))
             else:
                 # Fallback to old method if set_usercmd not available
@@ -895,6 +1004,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 'game_time_ms': game_time_ms,
                 'safe_to_run': self._safe_to_run,
                 'startup_check_count': self._startup_check_count,
+                'state_frame_id': self._frame_count,
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
             # Always store last state for polling
@@ -958,7 +1068,7 @@ class ql_agent_plugin(minqlx.Plugin):
             if game_state not in ('in_progress', 'warmup', 'countdown'):
                 return
 
-            # Call the actual handler (includes input application and state publishing)
+            # Call the actual handler (just debug logging now - state publishing moved to after_frame)
             self.handle_server_frame()
         except Exception as e:
             try:
@@ -967,7 +1077,12 @@ class ql_agent_plugin(minqlx.Plugin):
                 pass
 
     def handle_server_frame(self):
-        """Called by frame handler to apply inputs and publish the game state."""
+        """Called by frame handler. Only handles startup safety and debug logging.
+
+        NOTE: Input application and state publishing are now done in handle_after_frame
+        to ensure our view angles are set AFTER bot AI runs and the published state
+        reflects our angles, not the bot AI's.
+        """
         try:
             # Store debug info in Redis every 100 frames
             if self._frame_count % 100 == 0:
@@ -992,64 +1107,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 }
                 self.redis_conn.set('ql:agent:debug', json.dumps(debug))
 
-            agent_player = self.get_agent_player()
-            if not agent_player:
-                return
-
-            # Apply agent inputs - this calls set_usercmd() to cache the command
-            # The C code will apply it after G_RunFrame to override bot AI
-            if agent_player.is_alive:
-                self._apply_agent_inputs(agent_player)
-
-            # Track damage deltas and publish damage events
-            self._check_damage_events(agent_player)
-
-            # Collect and publish game state
-            # Use actual agent's steam_id for filtering (not configured human ID)
-            agent_id = agent_player.steam_id
-            agent_data = self._serialize_player(agent_player)
-
-            # Serialize opponents with in_fov calculation
-            opponents = []
-            for p in self.players():
-                if p.steam_id != agent_id:
-                    opp_data = self._serialize_player(p)
-                    if opp_data and agent_data:
-                        # Calculate if opponent is in agent's FOV
-                        opp_data['in_fov'] = self._is_in_fov(
-                            agent_data['position'],
-                            agent_data['view_angles']['yaw'],
-                            opp_data['position']
-                        )
-                    else:
-                        opp_data['in_fov'] = False
-                    opponents.append(opp_data)
-
-            items = self.get_items()  # Scan gentities for items
-
-            # Get timing information
-            server_time_ms = int(time.time() * 1000)  # Wall clock time in ms
-            game_time_ms = minqlx.get_game_time() if hasattr(minqlx, 'get_game_time') else 0
-
-            game_state = {
-                'agent': agent_data,
-                'opponents': opponents,
-                'items': items,
-                'game_in_progress': self.game.state in ("in_progress", "warmup", "countdown"),
-                'game_state_raw': self.game.state,
-                'game_type': self.game.type_short,
-                'map_name': self.game.map,
-                'server_time_ms': server_time_ms,
-                'game_time_ms': game_time_ms,
-            }
-            num_recipients = self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
-
-            # Track successful publishes
-            if self._frame_count % 100 == 0:
-                self.redis_conn.set('ql:agent:last_publish', self._frame_count)
-                self.redis_conn.set('ql:agent:recipients', num_recipients)
-                # Also store last game state for debugging
-                self.redis_conn.set('ql:agent:last_state', json.dumps(game_state))
+            # Note: Actual input application and state publishing moved to after_frame hook
         except Exception as e:
             # Store errors to Redis since console_print doesn't work from threads
             self.redis_conn.set('ql:agent:error', f"Frame {self._frame_count}: {e}")

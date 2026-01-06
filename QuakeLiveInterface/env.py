@@ -20,7 +20,8 @@ DEFAULT_WEAPON_LIST = [
 ]
 
 # View sensitivity: degrees per frame at max input
-VIEW_SENSITIVITY = 5.0  # Max degrees to turn per step
+# At 40 Hz: 3°/step = 120°/sec max turn rate (reasonable for Quake, less jitter)
+VIEW_SENSITIVITY = 3.0
 
 
 class QuakeLiveEnv(gym.Env):
@@ -101,20 +102,32 @@ class QuakeLiveEnv(gym.Env):
         self._consecutive_bad_states = 0  # Track consecutive "terminated" conditions
         self._BAD_STATE_THRESHOLD = 3     # Require N bad states before terminating
 
+        # Decision tick timing for monitoring
+        self._last_step_time = None
+        self._step_dt_sum = 0.0
+        self._step_dt_count = 0
+
     def step(self, action):
         """
         Run one timestep of the environment's dynamics.
         """
+        # Track decision tick timing
+        step_start = time.time()
+        if self._last_step_time is not None:
+            dt = step_start - self._last_step_time
+            self._step_dt_sum += dt
+            self._step_dt_count += 1
+        self._last_step_time = step_start
+
         self.last_action = action
         self._apply_action(action)
         self.step_count += 1
 
-        # Wait for the next game state update
+        # Wait for the next game state update (blocks until new frame_id)
         if not self.client.update_game_state():
-            # Handle case where no update is received
-            # For now, we'll just return the current state with no reward
+            # Handle case where no update is received (timeout)
             obs = self._get_observation()
-            return obs, 0, False, False, {}
+            return obs, 0, False, False, {'frame_sync_timeout': True}
 
         new_game_state = self.client.get_game_state()
 
@@ -147,6 +160,10 @@ class QuakeLiveEnv(gym.Env):
         info = {}
         if terminated or truncated:
             tracker = self.performance_tracker
+            # Calculate decision tick rate
+            avg_dt_ms = (self._step_dt_sum / self._step_dt_count * 1000) if self._step_dt_count > 0 else 0
+            decision_hz = 1000 / avg_dt_ms if avg_dt_ms > 0 else 0
+
             info['terminal_info'] = {
                 'damage_dealt': tracker.damage_dealt,
                 'damage_taken': tracker.damage_taken,
@@ -159,11 +176,13 @@ class QuakeLiveEnv(gym.Env):
                 'health_pickups': tracker.items_collected.get('Health', 0),
                 'armor_pickups': tracker.items_collected.get('Armor', 0),
                 'distance_traveled': tracker.total_distance_traveled,
+                'avg_step_dt_ms': avg_dt_ms,
+                'decision_hz': decision_hz,
             }
             # Quick validation print
             logger.info(f"Episode {self.episode_num} end: frags={tracker.kills} deaths={tracker.deaths} "
                        f"dmg_dealt={tracker.damage_dealt} dmg_taken={tracker.damage_taken} "
-                       f"accuracy={info['terminal_info']['accuracy']:.1f}%")
+                       f"accuracy={info['terminal_info']['accuracy']:.1f}% hz={decision_hz:.1f}")
 
         return obs, reward, terminated, truncated, info
 
@@ -196,6 +215,9 @@ class QuakeLiveEnv(gym.Env):
         self.performance_tracker.reset()
         self.game_state = GameState()  # Reset game state
         self._consecutive_bad_states = 0  # Reset termination counter
+        self._last_step_time = None  # Reset timing stats
+        self._step_dt_sum = 0.0
+        self._step_dt_count = 0
 
         import time as time_module
 

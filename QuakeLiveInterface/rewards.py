@@ -37,7 +37,7 @@ class RewardSystem:
 
         # Engagement shaping (prevents wandering)
         self.engagement_scale = 0.01    # Small reward for closing distance
-        self.max_engagement_reward = 0.5  # Cap per step
+        self.max_engagement_reward = 0.2  # Cap per step (lowered to avoid "distance farming")
 
         # Item/map control (secondary objectives)
         self.item_pickup_scale = 0.1    # Reduced from before
