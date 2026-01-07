@@ -247,6 +247,17 @@ For parallel training, channels are namespaced with `env_id`:
 - **[QUICKSTART.md](QUICKSTART.md)** - Detailed setup guide
 - **[minqlx-fork/README.md](minqlx-fork/README.md)** - Custom minqlx build instructions
 
+## Tips & Gotchas
+
+Things learned while building RL agents:
+
+- **Decision rate is ~40Hz** (~25ms per step). Plan your action discretization accordingly.
+- **Verify actions work first**. If forward movement doesn't change position, nothing else matters.
+- **Frag detection uses minqlx `stats.kills`/`stats.deaths`**, not `is_alive` transitions. Bots respawn too fast between frames.
+- **Docker rebuild after plugin changes**: `docker-compose build --no-cache && docker-compose up -d`
+- **Verify Redis stream**: `redis-cli SUBSCRIBE ql:game:state` should show ~60Hz JSON.
+- **Parallel training** uses `env_id` for Redis key namespacing (`ql:0:game:state`, `ql:1:game:state`, etc.)
+
 ## Troubleshooting
 
 **"Connection refused to Redis"**

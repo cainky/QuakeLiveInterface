@@ -181,29 +181,59 @@ class ql_agent_plugin(minqlx.Plugin):
             self.redis_conn.set(f'{self.prefix}agent:event_error', str(e))
 
     def handle_kill(self, victim, killer, data):
-        """Hook for kill events - publishes frag events."""
+        """Hook for kill events - publishes ALL kill events for diagnostics."""
         try:
             # Get actual agent player (may be a bot if agent_bot_name is set)
             agent_player = self.get_agent_player()
-            if not agent_player:
-                return  # No agent found, nothing to track
-            agent_id = agent_player.steam_id
+            agent_id = agent_player.steam_id if agent_player else None
 
-            # Check if agent is involved
-            if killer and killer.steam_id == agent_id:
-                # Agent killed someone
+            # DIAGNOSTIC: Publish ALL kills, not just agent-involved ones
+            # This helps us understand if kills are happening at all
+            killer_id = killer.steam_id if killer else None
+            killer_name = killer.clean_name if killer else 'world'
+            victim_id = victim.steam_id if victim else None
+            victim_name = victim.clean_name if victim else 'unknown'
+
+            # Determine relationship to agent
+            agent_is_killer = agent_id and killer_id == agent_id
+            agent_is_victim = agent_id and victim_id == agent_id
+
+            self._publish_event('KILL', {
+                'killer_id': killer_id,
+                'killer_name': killer_name,
+                'victim_id': victim_id,
+                'victim_name': victim_name,
+                'weapon': data.get('WEAPON', '') if data else '',
+                'mod': data.get('MOD', '') if data else '',
+                'agent_is_killer': agent_is_killer,
+                'agent_is_victim': agent_is_victim,
+            })
+
+            # Log to Redis for easy debugging
+            self.redis_conn.lpush(f'{self.prefix}kills_log', json.dumps({
+                'frame': self._frame_count,
+                'killer': killer_name,
+                'killer_id': killer_id,
+                'victim': victim_name,
+                'victim_id': victim_id,
+                'agent_is_killer': agent_is_killer,
+            }))
+            # Keep only last 50 kills
+            self.redis_conn.ltrim(f'{self.prefix}kills_log', 0, 49)
+
+            # Legacy events for backwards compatibility
+            if agent_is_killer:
                 self._publish_event('frag', {
                     'agent_role': 'killer',
-                    'victim_steam_id': victim.steam_id if victim else None,
-                    'victim_name': victim.clean_name if victim else None,
+                    'victim_steam_id': victim_id,
+                    'victim_name': victim_name,
                     'weapon': data.get('WEAPON', '') if data else '',
                 })
-            elif victim and victim.steam_id == agent_id:
-                # Agent was killed
+            elif agent_is_victim:
                 self._publish_event('death', {
                     'agent_role': 'victim',
-                    'killer_steam_id': killer.steam_id if killer else None,
-                    'killer_name': killer.clean_name if killer else None,
+                    'killer_steam_id': killer_id,
+                    'killer_name': killer_name,
                     'weapon': data.get('WEAPON', '') if data else '',
                 })
         except Exception as e:
@@ -211,8 +241,19 @@ class ql_agent_plugin(minqlx.Plugin):
 
     def handle_death(self, victim, killer, data):
         """Hook for death events (same as kill but from victim perspective)."""
-        # Most logic is handled in handle_kill, this is just for completeness
-        pass
+        # Debug: Log ALL deaths to see if this fires when kill hook doesn't
+        try:
+            victim_name = victim.clean_name if victim else 'unknown'
+            killer_name = killer.clean_name if killer else 'world'
+            self.redis_conn.lpush(f'{self.prefix}deaths_log', json.dumps({
+                'frame': self._frame_count,
+                'victim': victim_name,
+                'killer': killer_name,
+                'hook': 'death',  # Mark which hook this came from
+            }))
+            self.redis_conn.ltrim(f'{self.prefix}deaths_log', 0, 49)
+        except Exception as e:
+            self.redis_conn.set(f'{self.prefix}agent:death_hook_error', str(e))
 
     def handle_new_game(self, restart=False):
         """Hook for new game events - pause state loop during transition."""
@@ -510,6 +551,8 @@ class ql_agent_plugin(minqlx.Plugin):
             elif command == 'kickbots':
                 minqlx.console_print("[ql_agent] Kicking all bots")
                 # Kick each bot individually (kick allbots doesn't work)
+                # Add delay between kicks to prevent command overflow
+                import time as time_module
                 bots_kicked = 0
                 for player in list(self.players()):
                     # Bots have steam_ids starting with 90071996842377
@@ -518,6 +561,7 @@ class ql_agent_plugin(minqlx.Plugin):
                             player.kick()
                             bots_kicked += 1
                             minqlx.console_print(f"[ql_agent] Kicked bot: {player.clean_name}")
+                            time_module.sleep(0.5)  # Delay to prevent command buffer overflow
                         except Exception as e:
                             minqlx.console_print(f"[ql_agent] Failed to kick {player.clean_name}: {e}")
                 minqlx.console_print(f"[ql_agent] Kicked {bots_kicked} bots")
