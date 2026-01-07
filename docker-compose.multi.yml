@@ -1,0 +1,147 @@
+# QuakeLiveInterface - Multi-Server Setup for Parallel Training
+#
+# Usage:
+#   docker-compose -f docker-compose.multi.yml up -d   # Start 4 servers
+#
+# Each server uses a unique QLX_ENV_ID for Redis namespacing:
+#   Server 0: ql:0:agent:*, port 27960
+#   Server 1: ql:1:agent:*, port 27961
+#   Server 2: ql:2:agent:*, port 27962
+#   Server 3: ql:3:agent:*, port 27963
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ql-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  quake-server-0:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: quakelive-agent:latest
+    container_name: ql-server-0
+    ports:
+      - "27960:27960/udp"
+      - "27960:27960/tcp"
+    volumes:
+      - ./minqlx-plugin:/qlds/minqlx_plugins:ro
+    environment:
+      - QLX_ENV_ID=0
+      - QLX_REDISADDRESS=redis
+      - QLX_OWNER=76561197984141695
+      - QLX_AGENTSTEAMID=76561197984141695
+      - QLX_AGENTBOTNAME=anarki
+      - MAP=campgrounds
+      - GAMETYPE=duel
+      - QL_AGENT_ENABLE=1
+      - QL_AGENT_ENABLE_STATE_LOOP=1
+      - QL_AGENT_ENABLE_SET_USERCMD=1
+      - QL_AGENT_ENABLE_EVENTS=1
+      - QL_AGENT_ENABLE_ADMIN=1
+      - QL_AGENT_ENABLE_COMMANDS=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  quake-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: quakelive-agent:latest
+    container_name: ql-server-1
+    ports:
+      - "27961:27960/udp"
+      - "27961:27960/tcp"
+    volumes:
+      - ./minqlx-plugin:/qlds/minqlx_plugins:ro
+    environment:
+      - QLX_ENV_ID=1
+      - QLX_REDISADDRESS=redis
+      - QLX_OWNER=76561197984141695
+      - QLX_AGENTSTEAMID=76561197984141695
+      - QLX_AGENTBOTNAME=anarki
+      - MAP=campgrounds
+      - GAMETYPE=duel
+      - QL_AGENT_ENABLE=1
+      - QL_AGENT_ENABLE_STATE_LOOP=1
+      - QL_AGENT_ENABLE_SET_USERCMD=1
+      - QL_AGENT_ENABLE_EVENTS=1
+      - QL_AGENT_ENABLE_ADMIN=1
+      - QL_AGENT_ENABLE_COMMANDS=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  quake-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: quakelive-agent:latest
+    container_name: ql-server-2
+    ports:
+      - "27962:27960/udp"
+      - "27962:27960/tcp"
+    volumes:
+      - ./minqlx-plugin:/qlds/minqlx_plugins:ro
+    environment:
+      - QLX_ENV_ID=2
+      - QLX_REDISADDRESS=redis
+      - QLX_OWNER=76561197984141695
+      - QLX_AGENTSTEAMID=76561197984141695
+      - QLX_AGENTBOTNAME=anarki
+      - MAP=campgrounds
+      - GAMETYPE=duel
+      - QL_AGENT_ENABLE=1
+      - QL_AGENT_ENABLE_STATE_LOOP=1
+      - QL_AGENT_ENABLE_SET_USERCMD=1
+      - QL_AGENT_ENABLE_EVENTS=1
+      - QL_AGENT_ENABLE_ADMIN=1
+      - QL_AGENT_ENABLE_COMMANDS=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  quake-server-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: quakelive-agent:latest
+    container_name: ql-server-3
+    ports:
+      - "27963:27960/udp"
+      - "27963:27960/tcp"
+    volumes:
+      - ./minqlx-plugin:/qlds/minqlx_plugins:ro
+    environment:
+      - QLX_ENV_ID=3
+      - QLX_REDISADDRESS=redis
+      - QLX_OWNER=76561197984141695
+      - QLX_AGENTSTEAMID=76561197984141695
+      - QLX_AGENTBOTNAME=anarki
+      - MAP=campgrounds
+      - GAMETYPE=duel
+      - QL_AGENT_ENABLE=1
+      - QL_AGENT_ENABLE_STATE_LOOP=1
+      - QL_AGENT_ENABLE_SET_USERCMD=1
+      - QL_AGENT_ENABLE_EVENTS=1
+      - QL_AGENT_ENABLE_ADMIN=1
+      - QL_AGENT_ENABLE_COMMANDS=1
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  default:
+    name: quakelive-net

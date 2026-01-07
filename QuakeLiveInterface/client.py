@@ -9,14 +9,27 @@ logger = logging.getLogger(__name__)
 class QuakeLiveClient:
     """
     The main client for interacting with the Quake Live server via minqlx and Redis.
+
+    Args:
+        redis_host: Redis server hostname
+        redis_port: Redis server port
+        redis_db: Redis database number
+        env_id: Environment ID for namespacing (0, 1, 2, ... for parallel envs)
+                When None, uses legacy 'ql:' prefix for backwards compatibility
     """
 
-    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0):
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0, env_id=None):
         self.connection = RedisConnection(redis_host, redis_port, redis_db)
         self.game_state = GameState()
-        self.command_channel = 'ql:agent:command'
-        self.admin_command_channel = 'ql:admin:command'
-        self.game_state_channel = 'ql:game:state'
+        self.env_id = env_id
+
+        # Build namespaced channel/key names
+        prefix = f'ql:{env_id}:' if env_id is not None else 'ql:'
+        self.prefix = prefix
+        self.command_channel = f'{prefix}agent:command'
+        self.admin_command_channel = f'{prefix}admin:command'
+        self.game_state_channel = f'{prefix}game:state'
+        self.last_state_key = f'{prefix}agent:last_state'
         self.game_state_pubsub = self.connection.subscribe(self.game_state_channel)
 
         # Frame synchronization - ensure we only process each server frame once
@@ -40,7 +53,7 @@ class QuakeLiveClient:
         timeout_sec = timeout_ms / 1000.0
 
         while True:
-            state_data = self.connection.get('ql:agent:last_state')
+            state_data = self.connection.get(self.last_state_key)
             if state_data:
                 # Parse to check frame_id before full update
                 import json

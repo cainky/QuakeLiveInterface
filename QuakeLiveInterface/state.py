@@ -50,6 +50,9 @@ class GameState:
         self.game_type = None
         self.map_name = None
         self.map_geometry = None  # This will be loaded once per map
+        # Cumulative match stats from minqlx
+        self.agent_kills = 0
+        self.agent_deaths = 0
 
     def update_from_redis(self, redis_data: str):
         """
@@ -74,6 +77,10 @@ class GameState:
             self.game_in_progress = data.get('game_in_progress')
             self.game_type = data.get('game_type')
             self.map_name = data.get('map_name')
+
+            # Parse cumulative match stats (kills/deaths from minqlx stats)
+            self.agent_kills = data.get('agent_kills', 0)
+            self.agent_deaths = data.get('agent_deaths', 0)
 
             # Map geometry is loaded separately
             if 'map_geometry' in data:

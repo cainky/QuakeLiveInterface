@@ -24,6 +24,13 @@ class PerformanceTracker:
         self.end_time = None
         self.previous_state = None
         self.total_distance_traveled = 0
+        self.low_hp_steps = 0  # Steps where opponent HP <= finish threshold
+        # Finish window tracking (opp_hp<=25 & in_fov & dist<1000)
+        self.finish_steps = 0
+        self.finish_shots = 0  # Shots fired during finish window
+        # Track initial kill/death counters from minqlx (for delta calculation)
+        self._initial_kills = None
+        self._initial_deaths = None
 
     def log_step(self, current_state, action):
         """
@@ -48,6 +55,19 @@ class PerformanceTracker:
         if attack_value == 1:
             self.shots_fired += 1
 
+        # Initialize or update kill/death baseline from state (cumulative from minqlx)
+        current_kills = getattr(current_state, 'agent_kills', 0)
+        current_deaths = getattr(current_state, 'agent_deaths', 0)
+
+        if self._initial_kills is None:
+            self._initial_kills = current_kills
+            self._initial_deaths = current_deaths
+        else:
+            # Detect match reset: if cumulative counters decreased, update baseline
+            if current_kills < self._initial_kills or current_deaths < self._initial_deaths:
+                self._initial_kills = current_kills
+                self._initial_deaths = current_deaths
+
         if self.previous_state is None:
             self.previous_state = copy.deepcopy(current_state)
             return
@@ -66,7 +86,7 @@ class PerformanceTracker:
         if health_diff > 0: self.damage_taken += health_diff
         if armor_diff > 0: self.damage_taken += armor_diff
 
-        # Damage dealt and kills (health + armor, symmetric with damage_taken)
+        # Damage dealt (health + armor, symmetric with damage_taken)
         prev_opponents = {p.steam_id: p for p in self.previous_state.get_opponents()}
         for opp in current_state.get_opponents():
             if opp.steam_id in prev_opponents:
@@ -80,12 +100,28 @@ class PerformanceTracker:
                 if opp.armor < prev_opp.armor:
                     armor_dmg = prev_opp.armor - opp.armor
                     self.damage_dealt += armor_dmg
-                if not opp.is_alive and prev_opp.is_alive:
-                    self.kills += 1
+            # Track low HP steps (finish-eligible)
+            if opp.is_alive and opp.health <= 25:
+                self.low_hp_steps += 1
 
-        # Deaths
-        if not curr_agent.is_alive and prev_agent.is_alive:
-            self.deaths += 1
+            # Track finish window (opp_hp<=25 & in_fov & dist<1000)
+            if opp.is_alive and opp.health <= 25:
+                in_fov = getattr(opp, 'in_fov', True)
+                if in_fov:
+                    opp_pos = np.array([opp.position['x'], opp.position['y'], opp.position['z']])
+                    agent_pos = np.array([curr_agent.position['x'], curr_agent.position['y'], curr_agent.position['z']])
+                    dist = np.linalg.norm(agent_pos - opp_pos)
+                    if dist < 1000:
+                        self.finish_steps += 1
+                        if attack_value == 1:
+                            self.finish_shots += 1
+
+        # Kills and Deaths: use cumulative counters from minqlx (reliable, survives respawn)
+        # Note: current_kills and current_deaths were already fetched at the top of this method
+        final_kills = getattr(current_state, 'agent_kills', 0)
+        final_deaths = getattr(current_state, 'agent_deaths', 0)
+        self.kills = max(0, final_kills - self._initial_kills)
+        self.deaths = max(0, final_deaths - self._initial_deaths)
 
         # Item collection
         if curr_agent.health > prev_agent.health:

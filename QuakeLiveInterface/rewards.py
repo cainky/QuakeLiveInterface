@@ -55,13 +55,18 @@ class RewardSystem:
         self.face_opponent_yaw_threshold = 15.0  # degrees
         self.face_opponent_pitch_threshold = 30.0  # degrees
 
-        # Finish incentive (teaches "close the kill" when opponent is low)
+        # Conversion bonus (teaches "close the kill" when opponent is low)
         self.finish_hp_threshold = 25  # opponent HP threshold
-        self.finish_reward = 0.05  # per step while opponent is low
+        self.finish_distance_threshold = 1000  # must be within this distance
+        self.finish_conversion_bonus = 0.015  # per step bonus
+        self.finish_closing_scale = 0.005  # bonus per unit closed
+        self.finish_closing_cap = 20.0  # max distance delta to reward
+        self.finish_anti_suicide_threshold = 15  # zero bonus if taking more than this damage
 
         self.high_value_items = high_value_items if high_value_items is not None else HIGH_VALUE_ITEMS
         self.previous_state = None
         self.prev_opponent_dist = None
+        self.damage_taken_step = 0  # Track damage taken this step for finish bonus
 
     def calculate_reward(self, current_state, action):
         """
@@ -142,6 +147,7 @@ class RewardSystem:
         health_lost = max(0, prev_agent.health - curr_agent.health)
         armor_lost = max(0, prev_agent.armor - curr_agent.armor)
         damage_taken = health_lost + armor_lost
+        self.damage_taken_step = damage_taken  # Store for finish bonus anti-suicide check
         if damage_taken > 0:
             reward += damage_taken * self.damage_taken_scale
 
@@ -363,42 +369,96 @@ class RewardSystem:
         Penalty for firing:
         1. Base fire cost (-0.005) for any firing - stops perma-shoot
         2. Extra penalty (-0.005) when not in_fov - stops spray-into-wall
+        3. Reduced cost (-0.002) when in finish window (opp HP <= 25)
         """
         # Check if firing (action[3] == 1)
         is_firing = action[3] == 1 if len(action) > 3 else False
         if not is_firing:
             return 0
 
-        # Base fire cost: -0.005 per step while firing
-        # At 40 Hz = -0.2/sec, enough to discourage perma-shoot
-        penalty = -0.005
-
         opponents = current_state.get_opponents()
+
+        # Check if in finish window (any low HP opponent in FOV)
+        in_finish_window = False
+        any_in_fov = False
         if opponents:
-            # Extra penalty when not in_fov
-            any_in_fov = any(getattr(opp, 'in_fov', True) for opp in opponents if opp.is_alive)
-            if not any_in_fov:
-                penalty += self.fire_no_fov_penalty  # -0.005 more
+            for opp in opponents:
+                if opp.is_alive:
+                    opp_in_fov = getattr(opp, 'in_fov', True)
+                    if opp_in_fov:
+                        any_in_fov = True
+                        if opp.health <= self.finish_hp_threshold:
+                            in_finish_window = True
+                            break
+
+        # Base fire cost: -0.005 per step, reduced to -0.002 in finish window
+        if in_finish_window:
+            penalty = -0.002  # Encourage shooting when opponent is low
+        else:
+            penalty = -0.005
+
+        # Extra penalty when not in_fov
+        if opponents and not any_in_fov:
+            penalty += self.fire_no_fov_penalty  # -0.005 more
 
         return penalty
 
     def _calculate_finish_reward(self, current_state):
         """
-        Incentive to close the kill when opponent is low HP.
-        Teaches "press when you've won the trade" instead of disengaging.
+        Conversion bonus: incentive to close the kill when opponent is low HP.
+
+        Conditions for bonus:
+        1. Opponent HP <= 25
+        2. Opponent in FOV
+        3. Distance < 1000 units
+        4. Not taking heavy damage (anti-suicide guard)
+
+        Also includes closing distance bonus within the finish window.
         """
+        agent = current_state.get_agent()
         opponents = current_state.get_opponents()
-        if not opponents:
+
+        if not agent or not opponents:
             return 0
 
-        # Check if any opponent is low HP
-        for opp in opponents:
-            if opp.is_alive and opp.health <= self.finish_hp_threshold:
-                return self.finish_reward
+        # Anti-suicide guard: no bonus if eating big damage
+        if self.damage_taken_step > self.finish_anti_suicide_threshold:
+            return 0
 
-        return 0
+        agent_pos = np.array([agent.position['x'], agent.position['y'], agent.position['z']])
+
+        reward = 0
+        for opp in opponents:
+            if not opp.is_alive:
+                continue
+            if opp.health > self.finish_hp_threshold:
+                continue
+
+            # Check FOV
+            in_fov = getattr(opp, 'in_fov', True)
+            if not in_fov:
+                continue
+
+            # Check distance
+            opp_pos = np.array([opp.position['x'], opp.position['y'], opp.position['z']])
+            dist = np.linalg.norm(agent_pos - opp_pos)
+            if dist > self.finish_distance_threshold:
+                continue
+
+            # All conditions met - apply conversion bonus
+            reward += self.finish_conversion_bonus
+
+            # Closing distance bonus within finish window
+            if self.prev_opponent_dist is not None:
+                delta = self.prev_opponent_dist - dist
+                if delta > 0:
+                    # Reward closing in, capped to avoid spikes
+                    reward += self.finish_closing_scale * min(delta, self.finish_closing_cap)
+
+        return reward
 
     def reset(self):
         """Resets the internal state of the reward system."""
         self.previous_state = None
         self.prev_opponent_dist = None
+        self.damage_taken_step = 0

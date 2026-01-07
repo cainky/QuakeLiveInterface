@@ -72,16 +72,24 @@ class ql_agent_plugin(minqlx.Plugin):
         self.redis_port = int(self.get_cvar("qlx_redisPort", str) or os.environ.get("QLX_REDISPORT", "6379"))
         self.redis_db = int(self.get_cvar("qlx_redisDatabase", str) or os.environ.get("QLX_REDISDATABASE", "0"))
 
+        # Environment ID for namespacing parallel instances
+        # When set, all Redis keys/channels use prefix "ql:{env_id}:" instead of "ql:"
+        env_id_str = os.environ.get("QLX_ENV_ID", "")
+        self.env_id = int(env_id_str) if env_id_str else None
+        self.prefix = f'ql:{self.env_id}:' if self.env_id is not None else 'ql:'
+
         minqlx.console_print(f"[ql_agent] Connecting to Redis at {self.redis_host}:{self.redis_port}")
+        if self.env_id is not None:
+            minqlx.console_print(f"[ql_agent] Using namespaced prefix: {self.prefix}")
         self.redis_conn = redis.Redis(host=self.redis_host, port=self.redis_port, db=self.redis_db, decode_responses=True)
         minqlx.console_print(f"[ql_agent] Redis connection established: {self.redis_conn.ping()}")
         self._load_weapon_map()
 
-        # Redis channels
-        self.command_channel = 'ql:agent:command'
-        self.admin_command_channel = 'ql:admin:command'
-        self.game_state_channel = 'ql:game:state'
-        self.events_channel = 'ql:game:events'
+        # Redis channels (namespaced)
+        self.command_channel = f'{self.prefix}agent:command'
+        self.admin_command_channel = f'{self.prefix}admin:command'
+        self.game_state_channel = f'{self.prefix}game:state'
+        self.events_channel = f'{self.prefix}game:events'
 
         # Track damage for delta calculation
         self.last_damage_dealt = {}  # steam_id -> total damage dealt
@@ -170,7 +178,7 @@ class ql_agent_plugin(minqlx.Plugin):
             }
             self.redis_conn.publish(self.events_channel, json.dumps(event))
         except Exception as e:
-            self.redis_conn.set('ql:agent:event_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:event_error', str(e))
 
     def handle_kill(self, victim, killer, data):
         """Hook for kill events - publishes frag events."""
@@ -199,7 +207,7 @@ class ql_agent_plugin(minqlx.Plugin):
                     'weapon': data.get('WEAPON', '') if data else '',
                 })
         except Exception as e:
-            self.redis_conn.set('ql:agent:kill_hook_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:kill_hook_error', str(e))
 
     def handle_death(self, victim, killer, data):
         """Hook for death events (same as kill but from victim perspective)."""
@@ -242,7 +250,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 return
 
             if self._frame_count % 60 == 0:
-                self.redis_conn.set('ql:agent:after_frame_called', f'frame={self._frame_count}')
+                self.redis_conn.set(f'{self.prefix}agent:after_frame_called', f'frame={self._frame_count}')
 
             agent_player = self.get_agent_player()
             if agent_player and agent_player.is_alive:
@@ -257,7 +265,7 @@ class ql_agent_plugin(minqlx.Plugin):
 
         except Exception as e:
             # Don't spam errors every frame, just log to Redis
-            self.redis_conn.set('ql:agent:after_frame_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:after_frame_error', str(e))
 
     def _publish_agent_state(self):
         """Publish game state to Redis. Called from after_frame hook."""
@@ -293,6 +301,23 @@ class ql_agent_plugin(minqlx.Plugin):
             server_time_ms = int(time.time() * 1000)
             game_time_ms = minqlx.get_game_time() if hasattr(minqlx, 'get_game_time') else 0
 
+            # Get agent's score stats (kills/deaths) from minqlx stats object
+            agent_kills = 0
+            agent_deaths = 0
+            try:
+                stats = agent_player.stats
+                if stats:
+                    # minqlx stats has kills and deaths attributes
+                    agent_kills = getattr(stats, 'kills', 0)
+                    agent_deaths = getattr(stats, 'deaths', 0)
+                    # Debug: log available stats attributes (once per 300 frames)
+                    if self._frame_count % 300 == 0:
+                        attrs = [a for a in dir(stats) if not a.startswith('_')]
+                        self.redis_conn.set(f'{self.prefix}agent:stats_debug',
+                            f'kills={agent_kills} deaths={agent_deaths} attrs={attrs}')
+            except Exception as e:
+                self.redis_conn.set(f'{self.prefix}agent:stats_error', str(e))
+
             game_state = {
                 'agent': agent_data,
                 'opponents': opponents,
@@ -304,11 +329,13 @@ class ql_agent_plugin(minqlx.Plugin):
                 'server_time_ms': server_time_ms,
                 'game_time_ms': game_time_ms,
                 'state_frame_id': self._frame_count,  # For debugging sync issues
+                'agent_kills': agent_kills,  # Cumulative frags this match
+                'agent_deaths': agent_deaths,  # Cumulative deaths this match
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
-            self.redis_conn.set('ql:agent:last_state', json.dumps(game_state))
+            self.redis_conn.set(f'{self.prefix}agent:last_state', json.dumps(game_state))
         except Exception as e:
-            self.redis_conn.set('ql:agent:publish_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:publish_error', str(e))
 
     def _check_damage_events(self, agent_player):
         """Check for damage changes and publish damage events."""
@@ -349,7 +376,7 @@ class ql_agent_plugin(minqlx.Plugin):
             self.last_damage_taken[steam_id] = current_taken
 
         except Exception as e:
-            self.redis_conn.set('ql:agent:damage_check_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:damage_check_error', str(e))
 
     def listen_for_agent_commands(self):
         pubsub = self.redis_conn.pubsub()
@@ -429,7 +456,7 @@ class ql_agent_plugin(minqlx.Plugin):
                         state_after = agent_player.state
                         angles_after = state_after.view_angles if state_after else None
 
-                        self.redis_conn.set('ql:agent:set_view_angles_result', json.dumps({
+                        self.redis_conn.set(f'{self.prefix}agent:set_view_angles_result', json.dumps({
                             'client_id': agent_player.id,
                             'pitch': pitch,
                             'yaw': yaw,
@@ -772,7 +799,7 @@ class ql_agent_plugin(minqlx.Plugin):
 
         except Exception as e:
             # Log error but don't crash - return empty list
-            self.redis_conn.set('ql:agent:item_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:item_error', str(e))
 
         return items
 
@@ -819,11 +846,11 @@ class ql_agent_plugin(minqlx.Plugin):
                 self._frame_count += 1
                 # Write frame count to Redis for debugging
                 if self._frame_count % 100 == 0:
-                    self.redis_conn.set("ql:agent:frame", self._frame_count)
+                    self.redis_conn.set(f"{self.prefix}agent:frame", self._frame_count)
                 self.handle_server_frame()
                 time.sleep(1/60)  # ~60Hz
             except Exception as e:
-                self.redis_conn.set("ql:agent:error", str(e))
+                self.redis_conn.set(f"{self.prefix}agent:error", str(e))
                 time.sleep(0.1)
 
     def _apply_agent_inputs(self, agent_player):
@@ -890,7 +917,7 @@ class ql_agent_plugin(minqlx.Plugin):
                 self.agent_view_angles['yaw'] += self.agent_view_delta['yaw']
 
                 # Debug: log delta application
-                self.redis_conn.set('ql:agent:delta_applied', json.dumps({
+                self.redis_conn.set(f'{self.prefix}agent:delta_applied', json.dumps({
                     'frame': self._frame_count,
                     'delta_pitch': self.agent_view_delta['pitch'],
                     'delta_yaw': self.agent_view_delta['yaw'],
@@ -936,7 +963,7 @@ class ql_agent_plugin(minqlx.Plugin):
 
                 # Log usercmd every 10 frames (~6Hz) for debugging visibility
                 if self._frame_count % 10 == 0:
-                    self.redis_conn.set('ql:agent:usercmd', json.dumps({
+                    self.redis_conn.set(f'{self.prefix}agent:usercmd', json.dumps({
                         'client_id': client_id,
                         'forward': forwardmove,
                         'right': rightmove,
@@ -964,8 +991,8 @@ class ql_agent_plugin(minqlx.Plugin):
         except Exception as e:
             # Log error to Redis for debugging
             import traceback
-            self.redis_conn.set('ql:agent:input_error', f"{e}")
-            self.redis_conn.set('ql:agent:input_traceback', traceback.format_exc())
+            self.redis_conn.set(f'{self.prefix}agent:input_error', f"{e}")
+            self.redis_conn.set(f'{self.prefix}agent:input_traceback', traceback.format_exc())
 
     def _publish_state_if_possible(self):
         """Publish game state to Redis without applying inputs. Used during startup."""
@@ -1008,9 +1035,9 @@ class ql_agent_plugin(minqlx.Plugin):
             }
             self.redis_conn.publish(self.game_state_channel, json.dumps(game_state))
             # Always store last state for polling
-            self.redis_conn.set('ql:agent:last_state', json.dumps(game_state))
+            self.redis_conn.set(f'{self.prefix}agent:last_state', json.dumps(game_state))
         except Exception as e:
-            self.redis_conn.set('ql:agent:publish_error', str(e))
+            self.redis_conn.set(f'{self.prefix}agent:publish_error', str(e))
 
     def handle_game_frame(self):
         """Called by the frame hook (main server thread). Safe to access game state."""
@@ -1018,7 +1045,7 @@ class ql_agent_plugin(minqlx.Plugin):
             # Always increment frame counter for debugging visibility
             self._frame_count += 1
             if self._frame_count % 100 == 0:
-                self.redis_conn.set("ql:agent:frame", self._frame_count)
+                self.redis_conn.set(f"{self.prefix}agent:frame", self._frame_count)
 
             # STARTUP SAFETY CHECK: Don't enable until game is confirmed ready
             # Must pass multiple consecutive checks before we start operating
@@ -1072,7 +1099,7 @@ class ql_agent_plugin(minqlx.Plugin):
             self.handle_server_frame()
         except Exception as e:
             try:
-                self.redis_conn.set("ql:agent:frame_error", str(e))
+                self.redis_conn.set(f"{self.prefix}agent:frame_error", str(e))
             except:
                 pass
 
@@ -1105,11 +1132,11 @@ class ql_agent_plugin(minqlx.Plugin):
                     'agent_inputs': self.agent_inputs,
                     'agent_view_delta': self.agent_view_delta
                 }
-                self.redis_conn.set('ql:agent:debug', json.dumps(debug))
+                self.redis_conn.set(f'{self.prefix}agent:debug', json.dumps(debug))
 
             # Note: Actual input application and state publishing moved to after_frame hook
         except Exception as e:
             # Store errors to Redis since console_print doesn't work from threads
-            self.redis_conn.set('ql:agent:error', f"Frame {self._frame_count}: {e}")
+            self.redis_conn.set(f'{self.prefix}agent:error', f"Frame {self._frame_count}: {e}")
             import traceback
-            self.redis_conn.set('ql:agent:traceback', traceback.format_exc())
+            self.redis_conn.set(f'{self.prefix}agent:traceback', traceback.format_exc())

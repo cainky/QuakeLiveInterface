@@ -46,7 +46,7 @@ class QuakeLiveEnv(gym.Env):
                  max_velocity=800, max_ammo=200, num_items=10, num_opponents=3,
                  max_episode_steps=1000, demo_dir=None, weapon_list=None,
                  view_sensitivity=VIEW_SENSITIVITY, obs_mode='oracle',
-                 agent_bot_name=None, agent_bot_skill=5):
+                 agent_bot_name=None, agent_bot_skill=5, env_id=None):
         """
         Args:
             obs_mode: Observation mode for opponent visibility.
@@ -54,13 +54,16 @@ class QuakeLiveEnv(gym.Env):
                 'human' - Mask opponent features when not in agent's FOV (partial observability)
             agent_bot_name: If set, the agent is a bot that will be re-added after reset.
             agent_bot_skill: Skill level for the agent bot (1-5).
+            env_id: Environment ID for namespacing parallel environments (0, 1, 2, ...).
+                    When None, uses legacy 'ql:' prefix for backwards compatibility.
         """
         super(QuakeLiveEnv, self).__init__()
 
         if obs_mode not in ('oracle', 'human'):
             raise ValueError(f"obs_mode must be 'oracle' or 'human', got '{obs_mode}'")
 
-        self.client = QuakeLiveClient(redis_host, redis_port, redis_db)
+        self.client = QuakeLiveClient(redis_host, redis_port, redis_db, env_id=env_id)
+        self.env_id = env_id
         self.game_state = GameState()
         self.reward_system = RewardSystem()
         self.performance_tracker = PerformanceTracker()
@@ -178,6 +181,9 @@ class QuakeLiveEnv(gym.Env):
                 'distance_traveled': tracker.total_distance_traveled,
                 'avg_step_dt_ms': avg_dt_ms,
                 'decision_hz': decision_hz,
+                'low_hp_steps': tracker.low_hp_steps,  # Steps where opponent HP <= 25
+                'finish_steps': tracker.finish_steps,  # Steps in finish window (hp<=25 & in_fov & dist<1000)
+                'finish_shots': tracker.finish_shots,  # Shots fired during finish window
             }
             # Quick validation print
             logger.info(f"Episode {self.episode_num} end: frags={tracker.kills} deaths={tracker.deaths} "
