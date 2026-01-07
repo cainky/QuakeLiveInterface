@@ -43,6 +43,22 @@ class RewardSystem:
         self.item_pickup_scale = 0.1    # Reduced from before
         self.map_control_scale = 0.001  # Very small per-step positioning reward
 
+        # Pitch penalty (prevents floor-staring)
+        self.pitch_free_zone = 45.0     # No penalty within ±45°
+        self.pitch_max_penalty = 0.05   # Max penalty per step
+
+        # Fire penalty when opponent not in FOV (softened to not suppress exploration)
+        self.fire_no_fov_penalty = -0.005
+
+        # Face opponent reward (teaches "turn toward enemy")
+        self.face_opponent_reward = 0.01
+        self.face_opponent_yaw_threshold = 15.0  # degrees
+        self.face_opponent_pitch_threshold = 30.0  # degrees
+
+        # Finish incentive (teaches "close the kill" when opponent is low)
+        self.finish_hp_threshold = 25  # opponent HP threshold
+        self.finish_reward = 0.05  # per step while opponent is low
+
         self.high_value_items = high_value_items if high_value_items is not None else HIGH_VALUE_ITEMS
         self.previous_state = None
         self.prev_opponent_dist = None
@@ -71,7 +87,7 @@ class RewardSystem:
         combat_reward = self._calculate_combat_reward(current_state)
         total_reward += combat_reward
 
-        # === SECONDARY: Engagement incentive ===
+        # === SECONDARY: Engagement incentive (only when opponent in FOV) ===
         engagement_reward = self._calculate_engagement_reward(current_state)
         total_reward += engagement_reward
 
@@ -82,6 +98,22 @@ class RewardSystem:
         # === MINIMAL: Map control positioning ===
         map_reward = self._calculate_map_control_reward(current_state)
         total_reward += map_reward * self.map_control_scale
+
+        # === FACE OPPONENT REWARD (teaches aiming toward enemy) ===
+        face_reward = self._calculate_face_opponent_reward(current_state)
+        total_reward += face_reward
+
+        # === PITCH PENALTY (prevents floor-staring) ===
+        pitch_penalty = self._calculate_pitch_penalty(current_state)
+        total_reward += pitch_penalty
+
+        # === FIRE PENALTY when opponent not in FOV ===
+        fire_penalty = self._calculate_fire_penalty(current_state, action)
+        total_reward += fire_penalty
+
+        # === FINISH INCENTIVE (close the kill when opponent is low) ===
+        finish_reward = self._calculate_finish_reward(current_state)
+        total_reward += finish_reward
 
         # Update state for next step
         self.previous_state = copy.deepcopy(current_state)
@@ -120,9 +152,13 @@ class RewardSystem:
                 continue
             prev_opp = prev_opponents[opp.steam_id]
 
-            # Damage dealt
+            # Damage dealt (health + armor, symmetric with damage_taken)
+            damage_dealt = 0
             if opp.health < prev_opp.health:
-                damage_dealt = prev_opp.health - opp.health
+                damage_dealt += prev_opp.health - opp.health
+            if opp.armor < prev_opp.armor:
+                damage_dealt += prev_opp.armor - opp.armor
+            if damage_dealt > 0:
                 reward += damage_dealt * self.damage_dealt_scale
 
             # FRAG (opponent died)
@@ -136,6 +172,7 @@ class RewardSystem:
         """
         Small shaping reward for closing distance to opponent.
         Prevents the agent from learning to hide/wander.
+        ONLY applies when opponent is in FOV (prevents floor-stare farming).
         """
         if self.prev_opponent_dist is None:
             return 0
@@ -145,6 +182,10 @@ class RewardSystem:
 
         if not agent or not opponents:
             return 0
+
+        # Check if any opponent is in FOV - partial reward if not (prevents giving up on chase)
+        any_in_fov = any(getattr(opp, 'in_fov', True) for opp in opponents if opp.is_alive)
+        fov_multiplier = 1.0 if any_in_fov else 0.3
 
         # Get distance to closest opponent
         agent_pos = np.array([agent.position['x'], agent.position['y'], agent.position['z']])
@@ -165,6 +206,9 @@ class RewardSystem:
 
         # Clip to prevent huge rewards from teleports/respawns
         reward = np.clip(reward, -self.max_engagement_reward, self.max_engagement_reward)
+
+        # Apply FOV multiplier (partial reward when not facing opponent)
+        reward *= fov_multiplier
 
         return reward
 
@@ -242,6 +286,117 @@ class RewardSystem:
                 total_reward += (item_value / (dist + 500))
 
         return total_reward
+
+    def _calculate_face_opponent_reward(self, current_state):
+        """
+        Small reward for facing toward the opponent.
+        Teaches the bridge: turn camera → shoot better → win trades.
+        """
+        agent = current_state.get_agent()
+        opponents = current_state.get_opponents()
+
+        if not agent or not opponents:
+            return 0
+
+        # Get agent view angles
+        agent_yaw = agent.view_angles.get('yaw', 0)
+        agent_pitch = agent.view_angles.get('pitch', 0)
+
+        # Check if pitch is reasonable (not floor/ceiling staring)
+        if abs(agent_pitch) > self.face_opponent_pitch_threshold:
+            return 0
+
+        agent_pos = np.array([agent.position['x'], agent.position['y'], agent.position['z']])
+
+        # Find closest living opponent
+        closest_opp = None
+        min_dist = float('inf')
+        for opp in opponents:
+            if opp.is_alive:
+                opp_pos = np.array([opp.position['x'], opp.position['y'], opp.position['z']])
+                dist = np.linalg.norm(agent_pos - opp_pos)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_opp = opp
+
+        if not closest_opp:
+            return 0
+
+        # Calculate angle to opponent
+        opp_pos = np.array([closest_opp.position['x'], closest_opp.position['y'], closest_opp.position['z']])
+        delta = opp_pos - agent_pos
+        angle_to_opp = np.degrees(np.arctan2(delta[1], delta[0]))
+
+        # Calculate yaw error (handle wraparound)
+        yaw_error = angle_to_opp - agent_yaw
+        while yaw_error > 180:
+            yaw_error -= 360
+        while yaw_error < -180:
+            yaw_error += 360
+
+        # Reward if facing opponent within threshold
+        if abs(yaw_error) < self.face_opponent_yaw_threshold:
+            return self.face_opponent_reward
+
+        return 0
+
+    def _calculate_pitch_penalty(self, current_state):
+        """
+        Continuous penalty for pitch drift from horizon.
+        Quadratic: ~0 at horizon, -0.02 at ±70° (clamp).
+        This kills ceiling/floor attractors without being too harsh near horizon.
+        """
+        agent = current_state.get_agent()
+        if not agent:
+            return 0
+
+        pitch_deg = agent.view_angles.get('pitch', 0)
+        p = abs(pitch_deg)
+
+        # Quadratic penalty: grows smoothly from horizon
+        # At |pitch|=70, penalty = -0.02; at |pitch|=35, penalty = -0.005
+        penalty = -0.02 * (p / 70.0) ** 2
+        return penalty
+
+    def _calculate_fire_penalty(self, current_state, action):
+        """
+        Penalty for firing:
+        1. Base fire cost (-0.005) for any firing - stops perma-shoot
+        2. Extra penalty (-0.005) when not in_fov - stops spray-into-wall
+        """
+        # Check if firing (action[3] == 1)
+        is_firing = action[3] == 1 if len(action) > 3 else False
+        if not is_firing:
+            return 0
+
+        # Base fire cost: -0.005 per step while firing
+        # At 40 Hz = -0.2/sec, enough to discourage perma-shoot
+        penalty = -0.005
+
+        opponents = current_state.get_opponents()
+        if opponents:
+            # Extra penalty when not in_fov
+            any_in_fov = any(getattr(opp, 'in_fov', True) for opp in opponents if opp.is_alive)
+            if not any_in_fov:
+                penalty += self.fire_no_fov_penalty  # -0.005 more
+
+        return penalty
+
+    def _calculate_finish_reward(self, current_state):
+        """
+        Incentive to close the kill when opponent is low HP.
+        Teaches "press when you've won the trade" instead of disengaging.
+        """
+        opponents = current_state.get_opponents()
+        if not opponents:
+            return 0
+
+        # Check if any opponent is low HP
+        for opp in opponents:
+            if opp.is_alive and opp.health <= self.finish_hp_threshold:
+                return self.finish_reward
+
+        return 0
 
     def reset(self):
         """Resets the internal state of the reward system."""

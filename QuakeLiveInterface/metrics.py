@@ -66,15 +66,20 @@ class PerformanceTracker:
         if health_diff > 0: self.damage_taken += health_diff
         if armor_diff > 0: self.damage_taken += armor_diff
 
-        # Damage dealt and kills
+        # Damage dealt and kills (health + armor, symmetric with damage_taken)
         prev_opponents = {p.steam_id: p for p in self.previous_state.get_opponents()}
         for opp in current_state.get_opponents():
             if opp.steam_id in prev_opponents:
                 prev_opp = prev_opponents[opp.steam_id]
+                # Count health damage
                 if opp.health < prev_opp.health:
-                    damage = prev_opp.health - opp.health
-                    self.damage_dealt += damage
+                    health_dmg = prev_opp.health - opp.health
+                    self.damage_dealt += health_dmg
                     self.successful_hits += 1
+                # Count armor damage
+                if opp.armor < prev_opp.armor:
+                    armor_dmg = prev_opp.armor - opp.armor
+                    self.damage_dealt += armor_dmg
                 if not opp.is_alive and prev_opp.is_alive:
                     self.kills += 1
 

@@ -476,6 +476,17 @@ class QuakeLiveEnv(gym.Env):
         pitch_delta = pitch_normalized * self.view_sensitivity
         yaw_delta = yaw_normalized * self.view_sensitivity
 
+        # Clamp pitch to prevent floor/ceiling staring (±70°)
+        PITCH_LIMIT = 70.0
+        agent = self.game_state.get_agent() if self.game_state else None
+        if agent:
+            current_pitch = agent.view_angles.get('pitch', 0)
+            new_pitch = current_pitch + pitch_delta
+            if new_pitch > PITCH_LIMIT:
+                pitch_delta = PITCH_LIMIT - current_pitch
+            elif new_pitch < -PITCH_LIMIT:
+                pitch_delta = -PITCH_LIMIT - current_pitch
+
         # Send unified input command
         self.client.send_input(
             forward=forward,
