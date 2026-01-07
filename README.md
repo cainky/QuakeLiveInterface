@@ -31,6 +31,19 @@ docker-compose up -d
 poetry run python tools/test_subscribe.py
 ```
 
+### Parallel Training (4 servers)
+
+```bash
+# Start 4 independent Quake servers for parallel RL training
+docker-compose -f docker-compose.multi.yml up -d
+
+# Each server uses a unique env_id for Redis namespacing:
+#   Server 0: ql:0:agent:*, port 27960
+#   Server 1: ql:1:agent:*, port 27961
+#   Server 2: ql:2:agent:*, port 27962
+#   Server 3: ql:3:agent:*, port 27963
+```
+
 ## How It Works
 
 ```
@@ -84,16 +97,21 @@ Subscribe to `ql:game:state` for real-time JSON:
       "velocity": {"x": 0.0, "y": 0.0, "z": 0.0},
       "view_angles": {"pitch": 0.0, "yaw": 180.0, "roll": 0.0},
       "is_alive": true,
+      "in_fov": true,
       "team": "free"
     }
   ],
   "items": [
-    {"name": "item_armor_mega", "position": {"x": 0, "y": 0, "z": 0}, "is_available": true, "spawn_time": 0},
-    {"name": "item_health_mega", "position": {"x": -384, "y": 640, "z": 32}, "is_available": false, "spawn_time": 35000}
+    {"name": "item_armor_mega", "position": {"x": 0, "y": 0, "z": 0}, "is_available": true, "time_to_spawn_ms": 0},
+    {"name": "item_health_mega", "position": {"x": -384, "y": 640, "z": 32}, "is_available": false, "time_to_spawn_ms": 35000}
   ],
   "game_in_progress": true,
   "game_type": "duel",
-  "map_name": "toxicity"
+  "map_name": "toxicity",
+  "agent_kills": 2,
+  "agent_deaths": 1,
+  "server_time_ms": 1704567890123,
+  "game_time_ms": 45000
 }
 ```
 
@@ -213,6 +231,16 @@ QuakeLiveInterface/
 | `ql:game:state` | Server → Client | Game state at ~60Hz |
 | `ql:agent:command` | Client → Server | Movement/action commands |
 | `ql:admin:command` | Client → Server | Admin commands (restart, record) |
+| `ql:game:events` | Server → Client | Damage, frag, death, pickup events |
+
+### Parallel Environment Namespacing
+
+For parallel training, channels are namespaced with `env_id`:
+
+| Single Env | Parallel Env (id=0) | Parallel Env (id=1) |
+|------------|---------------------|---------------------|
+| `ql:game:state` | `ql:0:game:state` | `ql:1:game:state` |
+| `ql:agent:command` | `ql:0:agent:command` | `ql:1:agent:command` |
 
 ## Documentation
 
