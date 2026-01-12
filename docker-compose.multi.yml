@@ -15,11 +15,28 @@ services:
     container_name: ql-redis
     ports:
       - "127.0.0.1:6379:6379"
+    # Optimized Redis settings for game loop reliability
+    # - tcp-keepalive: Detect dead connections
+    # - timeout 0: Never timeout idle connections
+    # - save "": Disable RDB persistence (in-memory only)
+    # - appendonly no: Disable AOF for maximum performance
+    command: >
+      redis-server
+      --tcp-keepalive 60
+      --timeout 0
+      --tcp-backlog 511
+      --maxclients 200
+      --save ""
+      --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     restart: unless-stopped
 
   quake-server-0:

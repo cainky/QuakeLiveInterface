@@ -11,11 +11,24 @@ services:
     container_name: ql-redis
     ports:
       - "127.0.0.1:6379:6379"
+    # Optimized Redis settings for game loop reliability
+    command: >
+      redis-server
+      --tcp-keepalive 60
+      --timeout 0
+      --tcp-backlog 511
+      --maxclients 100
+      --save ""
+      --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     restart: unless-stopped
 
   quake-server:

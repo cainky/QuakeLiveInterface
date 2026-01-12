@@ -176,4 +176,11 @@ class QuakeLiveClient:
         Closes the connection to the Redis server.
         """
         logger.info("Closing QuakeLiveClient connection.")
+        # Close pubsub first
+        if hasattr(self, 'game_state_pubsub') and self.game_state_pubsub is not None:
+            try:
+                self.game_state_pubsub.close()
+            except Exception:
+                pass
+            self.game_state_pubsub = None
         self.connection.close()
