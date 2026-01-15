@@ -350,26 +350,52 @@ class RedisConnection:
             logger.warning(f"Set failed for {key}: {e}")
             return False
 
-    def close(self):
-        """Close the Redis connection and stop health monitoring."""
-        logger.info("Closing Redis connection")
+    def close(self, timeout: float = 2.0):
+        """
+        Close the Redis connection and stop health monitoring.
+
+        Args:
+            timeout: Maximum time to wait for threads to stop (seconds)
+        """
+        logger.info("Closing Redis connection...")
+
+        # Signal health monitor to stop
         self._health_monitor_running = False
 
+        # Wait for health monitor thread to finish
+        if self._health_monitor_thread and self._health_monitor_thread.is_alive():
+            logger.debug("Waiting for health monitor thread to stop...")
+            self._health_monitor_thread.join(timeout=timeout)
+            if self._health_monitor_thread.is_alive():
+                logger.warning("Health monitor thread did not stop in time")
+
         # Close all pubsub subscriptions
-        for pubsub in list(self._pubsub_subscriptions.values()):
+        for channel, pubsub in list(self._pubsub_subscriptions.items()):
             try:
+                logger.debug(f"Closing pubsub subscription: {channel}")
                 pubsub.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing pubsub {channel}: {e}")
         self._pubsub_subscriptions.clear()
 
         # Close connection pool
         try:
             self._pool.disconnect()
-        except Exception:
-            pass
+            logger.debug("Connection pool disconnected")
+        except Exception as e:
+            logger.warning(f"Error disconnecting pool: {e}")
 
         self._healthy = False
+        logger.info("Redis connection closed")
+
+    def __enter__(self):
+        """Context manager entry - returns self."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup on exit."""
+        self.close()
+        return False  # Don't suppress exceptions
 
 
 class RobustPubSub:

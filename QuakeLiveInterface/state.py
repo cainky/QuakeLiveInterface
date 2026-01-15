@@ -54,12 +54,20 @@ class GameState:
         self.agent_kills = 0
         self.agent_deaths = 0
 
-    def update_from_redis(self, redis_data: str):
+    def update_from_redis(self, redis_data: str) -> bool:
         """
         Updates the game state from a JSON string received from Redis.
+
         Args:
             redis_data: A JSON string containing the game state.
+
+        Returns:
+            True if update succeeded, False if data was invalid/malformed.
         """
+        if not redis_data:
+            logger.warning("Empty redis_data received")
+            return False
+
         try:
             data = json.loads(redis_data)
 
@@ -87,12 +95,17 @@ class GameState:
                 self.map_geometry = data.get('map_geometry')
 
             logger.debug("Game state updated from Redis data.")
+            return True
+
         except json.JSONDecodeError as e:
-            logger.error(f"Error decoding JSON from Redis: {e}")
-            raise
+            logger.error(f"Error decoding JSON from Redis: {e}. Data preview: {redis_data[:200] if redis_data else 'None'}")
+            return False
         except KeyError as e:
             logger.error(f"Missing key in game state data from Redis: {e}")
-            raise
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error updating game state: {e}")
+            return False
 
     def _create_player_from_data(self, player_data):
         weapons = [Weapon(w['name'], w['ammo']) for w in player_data.get('weapons', [])]
