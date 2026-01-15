@@ -229,6 +229,7 @@ class ql_agent_plugin(minqlx.Plugin):
             db=self.redis_db
         )
         self._redis_lock = threading.Lock()  # Thread safety for Redis operations
+        self._input_lock = threading.Lock()  # Thread safety for agent input state
         minqlx.console_print(f"[ql_agent] Redis connection established (robust mode)")
         self._load_weapon_map()
 
@@ -332,6 +333,43 @@ class ql_agent_plugin(minqlx.Plugin):
             minqlx.console_print("[ql_agent] State publishing DISABLED")
 
         minqlx.console_print("[ql_agent] Plugin initialization complete")
+
+    def shutdown(self, timeout: float = 2.0):
+        """
+        Gracefully shutdown the plugin, stopping all background threads.
+
+        Args:
+            timeout: Maximum time to wait for each thread to stop (seconds)
+        """
+        minqlx.console_print("[ql_agent] Shutting down plugin...")
+        self._running = False
+
+        # Stop agent command listener
+        if self._agent_listener:
+            minqlx.console_print("[ql_agent] Stopping agent command listener...")
+            self._agent_listener.stop()
+            if hasattr(self, 'agent_command_thread') and self.agent_command_thread.is_alive():
+                self.agent_command_thread.join(timeout=timeout)
+                if self.agent_command_thread.is_alive():
+                    minqlx.console_print("[ql_agent] Warning: agent command thread did not stop in time")
+
+        # Stop admin command listener
+        if self._admin_listener:
+            minqlx.console_print("[ql_agent] Stopping admin command listener...")
+            self._admin_listener.stop()
+            if hasattr(self, 'admin_command_thread') and self.admin_command_thread.is_alive():
+                self.admin_command_thread.join(timeout=timeout)
+                if self.admin_command_thread.is_alive():
+                    minqlx.console_print("[ql_agent] Warning: admin command thread did not stop in time")
+
+        # Close Redis connection
+        if hasattr(self, 'redis_conn') and self.redis_conn:
+            try:
+                self.redis_conn.close()
+            except Exception as e:
+                minqlx.console_print(f"[ql_agent] Error closing Redis: {e}")
+
+        minqlx.console_print("[ql_agent] Plugin shutdown complete")
 
     def _safe_redis_op(self, operation, *args, **kwargs):
         """
@@ -463,6 +501,11 @@ class ql_agent_plugin(minqlx.Plugin):
         self._safe_to_run = False
         self._startup_check_count = 0  # Reset startup safety counter
         self._game_restarting = True  # Block commands during map change
+        # Reset damage tracking for new map
+        self.last_damage_dealt.clear()
+        self.last_damage_taken.clear()
+        # Reset agent tracking state
+        self._reset_agent_tracking()
         # Clear the restarting flag after a delay - the frame hook will verify game readiness
         @minqlx.delay(2.0)
         def clear_restart_flag():
@@ -629,31 +672,34 @@ class ql_agent_plugin(minqlx.Plugin):
             if command == 'input':
                 # New unified input command - sets all button states at once
                 # Expected format: {"command": "input", "forward": 1, "back": 0, "left": 0, "right": 1, ...}
-                self.agent_inputs['forward'] = bool(data.get('forward', 0))
-                self.agent_inputs['back'] = bool(data.get('back', 0))
-                self.agent_inputs['left'] = bool(data.get('left', 0))
-                self.agent_inputs['right'] = bool(data.get('right', 0))
-                self.agent_inputs['jump'] = bool(data.get('jump', 0))
-                self.agent_inputs['crouch'] = bool(data.get('crouch', 0))
-                self.agent_inputs['attack'] = bool(data.get('attack', 0))
-                # View deltas are applied incrementally each frame
-                self.agent_view_delta['pitch'] = float(data.get('pitch_delta', 0.0))
-                self.agent_view_delta['yaw'] = float(data.get('yaw_delta', 0.0))
+                # Thread-safe: lock protects against race with frame hook reading these
+                with self._input_lock:
+                    self.agent_inputs['forward'] = bool(data.get('forward', 0))
+                    self.agent_inputs['back'] = bool(data.get('back', 0))
+                    self.agent_inputs['left'] = bool(data.get('left', 0))
+                    self.agent_inputs['right'] = bool(data.get('right', 0))
+                    self.agent_inputs['jump'] = bool(data.get('jump', 0))
+                    self.agent_inputs['crouch'] = bool(data.get('crouch', 0))
+                    self.agent_inputs['attack'] = bool(data.get('attack', 0))
+                    # View deltas are applied incrementally each frame
+                    self.agent_view_delta['pitch'] = float(data.get('pitch_delta', 0.0))
+                    self.agent_view_delta['yaw'] = float(data.get('yaw_delta', 0.0))
 
             elif command == 'look':
                 # Set view angle deltas (degrees per frame)
-                self.agent_view_delta['pitch'] = float(data.get('pitch', 0.0))
-                self.agent_view_delta['yaw'] = float(data.get('yaw', 0.0))
+                with self._input_lock:
+                    self.agent_view_delta['pitch'] = float(data.get('pitch', 0.0))
+                    self.agent_view_delta['yaw'] = float(data.get('yaw', 0.0))
 
             elif command == 'weapon_select':
                 agent_player = self.get_agent_player()
                 if agent_player:
                     weapon = data.get('weapon')
                     if weapon:
-                        minqlx.command(f"cmd {agent_player.id} weapon {weapon}")
+                        minqlx.console_command(f"cmd {agent_player.id} weapon {weapon}")
 
             elif command == 'say':
-                minqlx.command(f"say {data.get('message', '')}")
+                minqlx.console_command(f"say {data.get('message', '')}")
 
             elif command == 'set_view_angles':
                 # Direct test command: call minqlx.set_view_angles
@@ -663,9 +709,10 @@ class ql_agent_plugin(minqlx.Plugin):
                 yaw = float(data.get('yaw', 0.0))
                 roll = float(data.get('roll', 0.0))
                 # Update our tracked angles so usercmd doesn't fight us
-                self.agent_view_angles['pitch'] = pitch
-                self.agent_view_angles['yaw'] = yaw
-                self.agent_view_initialized = True
+                with self._input_lock:
+                    self.agent_view_angles['pitch'] = pitch
+                    self.agent_view_angles['yaw'] = yaw
+                    self.agent_view_initialized = True
 
                 @minqlx.delay(0)
                 def do_set_view_angles():
@@ -693,7 +740,10 @@ class ql_agent_plugin(minqlx.Plugin):
                 do_set_view_angles()
 
         except Exception as e:
+            # Log to both console and Redis for monitoring
             print(f"Error handling agent command: {e}")
+            self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:command_error',
+                f"{e}\n{traceback.format_exc()}")
 
     def handle_admin_command(self, command_data):
         """Queue admin command for main thread execution."""
@@ -767,18 +817,19 @@ class ql_agent_plugin(minqlx.Plugin):
 
     def _reset_agent_tracking(self):
         """Reset the tracked view angles and inputs when agent respawns."""
-        self.agent_view_angles = {'pitch': 0.0, 'yaw': 0.0}
-        self.agent_view_initialized = False
-        self.agent_inputs = {
-            'forward': False,
-            'back': False,
-            'left': False,
-            'right': False,
-            'jump': False,
-            'crouch': False,
-            'attack': False,
-        }
-        self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
+        with self._input_lock:
+            self.agent_view_angles = {'pitch': 0.0, 'yaw': 0.0}
+            self.agent_view_initialized = False
+            self.agent_inputs = {
+                'forward': False,
+                'back': False,
+                'left': False,
+                'right': False,
+                'jump': False,
+                'crouch': False,
+                'attack': False,
+            }
+            self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
         print("[ql_agent] Agent tracking reset")
 
     def get_agent_player(self):
@@ -1097,77 +1148,89 @@ class ql_agent_plugin(minqlx.Plugin):
         try:
             client_id = agent_player.id
 
+            # Thread-safe: copy input state under lock, then use copies
+            with self._input_lock:
+                inputs = self.agent_inputs.copy()
+                view_delta = self.agent_view_delta.copy()
+                view_initialized = self.agent_view_initialized
+
             # Calculate movement values (-127 to 127)
             forwardmove = 0
             rightmove = 0
             upmove = 0
 
-            if self.agent_inputs['forward']:
+            if inputs['forward']:
                 forwardmove = 127
-            elif self.agent_inputs['back']:
+            elif inputs['back']:
                 forwardmove = -127
 
-            if self.agent_inputs['right']:
+            if inputs['right']:
                 rightmove = 127
-            elif self.agent_inputs['left']:
+            elif inputs['left']:
                 rightmove = -127
 
-            if self.agent_inputs['jump']:
+            if inputs['jump']:
                 upmove = 127
-            elif self.agent_inputs['crouch']:
+            elif inputs['crouch']:
                 upmove = -127
 
             # Calculate button state
             buttons = 0
-            if self.agent_inputs['attack']:
+            if inputs['attack']:
                 buttons |= 1  # BUTTON_ATTACK
 
             # Initialize our tracked view angles from game state on first run
             # After that, we ONLY use our tracked values to avoid bot AI interference
-            if not self.agent_view_initialized:
+            if not view_initialized:
                 # Check game safety before accessing player state
                 if hasattr(minqlx, 'is_game_safe') and not minqlx.is_game_safe():
                     return
                 try:
                     state = agent_player.state
-                    if state and hasattr(state, 'view_angles') and state.view_angles:
-                        self.agent_view_angles['pitch'] = state.view_angles[0]
-                        self.agent_view_angles['yaw'] = state.view_angles[1]
-                        self.agent_view_initialized = True
+                    if state and hasattr(state, 'view_angles') and state.view_angles and len(state.view_angles) >= 2:
+                        with self._input_lock:
+                            self.agent_view_angles['pitch'] = state.view_angles[0]
+                            self.agent_view_angles['yaw'] = state.view_angles[1]
+                            self.agent_view_initialized = True
                 except Exception:
                     pass
 
             # Apply view deltas to OUR tracked angles (not game state)
             # Note: delta is applied ONCE when received, not every frame
             # The deltas are consumed (set to 0) after applying
-            if self.agent_view_delta['pitch'] != 0.0 or self.agent_view_delta['yaw'] != 0.0:
-                self.agent_view_angles['pitch'] += self.agent_view_delta['pitch']
-                self.agent_view_angles['yaw'] += self.agent_view_delta['yaw']
+            if view_delta['pitch'] != 0.0 or view_delta['yaw'] != 0.0:
+                with self._input_lock:
+                    self.agent_view_angles['pitch'] += view_delta['pitch']
+                    self.agent_view_angles['yaw'] += view_delta['yaw']
 
-                # Debug: log delta application
-                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:delta_applied', json.dumps({
-                    'frame': self._frame_count,
-                    'delta_pitch': self.agent_view_delta['pitch'],
-                    'delta_yaw': self.agent_view_delta['yaw'],
-                    'new_pitch': self.agent_view_angles['pitch'],
-                    'new_yaw': self.agent_view_angles['yaw']
-                }))
+                    # Debug: log delta application
+                    delta_log = {
+                        'frame': self._frame_count,
+                        'delta_pitch': view_delta['pitch'],
+                        'delta_yaw': view_delta['yaw'],
+                        'new_pitch': self.agent_view_angles['pitch'],
+                        'new_yaw': self.agent_view_angles['yaw']
+                    }
 
-                # Clear deltas after applying (one-shot application)
-                self.agent_view_delta['pitch'] = 0.0
-                self.agent_view_delta['yaw'] = 0.0
+                    # Clear deltas after applying (one-shot application)
+                    self.agent_view_delta['pitch'] = 0.0
+                    self.agent_view_delta['yaw'] = 0.0
 
-            # Clamp pitch to valid range
-            self.agent_view_angles['pitch'] = max(-89.0, min(89.0, self.agent_view_angles['pitch']))
+                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:delta_applied', json.dumps(delta_log))
 
-            # Wrap yaw to [-180, 180]
-            while self.agent_view_angles['yaw'] > 180:
-                self.agent_view_angles['yaw'] -= 360
-            while self.agent_view_angles['yaw'] < -180:
-                self.agent_view_angles['yaw'] += 360
+            # Thread-safe: read and clamp angles under lock
+            with self._input_lock:
+                # Clamp pitch to valid range
+                self.agent_view_angles['pitch'] = max(-89.0, min(89.0, self.agent_view_angles['pitch']))
 
-            new_pitch = self.agent_view_angles['pitch']
-            new_yaw = self.agent_view_angles['yaw']
+                # Wrap yaw to [-180, 180]
+                while self.agent_view_angles['yaw'] > 180:
+                    self.agent_view_angles['yaw'] -= 360
+                while self.agent_view_angles['yaw'] < -180:
+                    self.agent_view_angles['yaw'] += 360
+
+                new_pitch = self.agent_view_angles['pitch']
+                new_yaw = self.agent_view_angles['yaw']
 
             # Use set_usercmd for direct control (if available)
             # Final safety check right before the call

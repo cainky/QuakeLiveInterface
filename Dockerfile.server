@@ -51,10 +51,11 @@ COPY --from=builder /build/minqlx/python/minqlx.zip /qlds/
 # Copy our configuration files
 COPY docker/server.cfg /qlds/baseq3/server.cfg
 COPY docker/start.sh /start.sh
-RUN chmod +x /start.sh
+COPY docker/healthcheck.sh /healthcheck.sh
+RUN chmod +x /start.sh /healthcheck.sh
 
 # Set ownership
-RUN chown -R qldsuser:qldsuser /qlds /start.sh
+RUN chown -R qldsuser:qldsuser /qlds /start.sh /healthcheck.sh
 
 # Switch to non-root user
 USER qldsuser
