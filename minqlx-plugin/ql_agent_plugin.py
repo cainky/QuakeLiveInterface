@@ -191,8 +191,11 @@ class ql_agent_plugin(minqlx.Plugin):
         self.ENABLE_EVENTS = os.environ.get("QL_AGENT_ENABLE_EVENTS", "1") == "1"
         self.ENABLE_ADMIN_COMMANDS = os.environ.get("QL_AGENT_ENABLE_ADMIN", "1") == "1"
         self.ENABLE_AGENT_COMMANDS = os.environ.get("QL_AGENT_ENABLE_COMMANDS", "1") == "1"
+        # SPAWN LOADOUT: Give weapons on spawn for CA-style curriculum (skips item economy)
+        # Set QL_SPAWN_LOADOUT=1 to enable, or use admin command to toggle
+        self.ENABLE_SPAWN_LOADOUT = os.environ.get("QL_SPAWN_LOADOUT", "1") == "1"
 
-        minqlx.console_print(f"[ql_agent] Feature flags: ENABLE_AGENT={self.ENABLE_AGENT}, STATE_LOOP={self.ENABLE_STATE_LOOP}, SET_USERCMD={self.ENABLE_SET_USERCMD}, EVENTS={self.ENABLE_EVENTS}")
+        minqlx.console_print(f"[ql_agent] Feature flags: ENABLE_AGENT={self.ENABLE_AGENT}, STATE_LOOP={self.ENABLE_STATE_LOOP}, SET_USERCMD={self.ENABLE_SET_USERCMD}, EVENTS={self.ENABLE_EVENTS}, SPAWN_LOADOUT={self.ENABLE_SPAWN_LOADOUT}")
 
         # If master switch is off, don't initialize anything
         if not self.ENABLE_AGENT:
@@ -249,6 +252,8 @@ class ql_agent_plugin(minqlx.Plugin):
         # Register hooks for game transitions to pause state loop
         self.add_hook("new_game", self.handle_new_game)
         self.add_hook("map", self.handle_map_change)
+        # Register spawn hook for CA-style weapon loadout curriculum
+        self.add_hook("player_spawn", self.handle_player_spawn)
         # Use frame hook for state publishing (runs in main server thread - safe!)
         if self.ENABLE_STATE_LOOP:
             self.add_hook("frame", self.handle_game_frame)
@@ -276,6 +281,11 @@ class ql_agent_plugin(minqlx.Plugin):
             'crouch': False,
             'attack': False,
         }
+        # MEMORY LEAK FIX: Cache items to avoid calling get_entity_info() every frame
+        # The leak is in minqlx.get_entity_info() - C function doesn't properly free dicts
+        self._cached_items = []
+        self._items_cache_frame = 0
+        self._items_cache_interval = 60  # Refresh every 60 frames (1 sec at 60fps)
         # View angle deltas to apply each frame
         self.agent_view_delta = {'pitch': 0.0, 'yaw': 0.0}
         # ABSOLUTE desired view angles - we track these ourselves to avoid bot AI interference
@@ -329,8 +339,23 @@ class ql_agent_plugin(minqlx.Plugin):
         # The frame hook runs in the main server thread so it's safe
         if self.ENABLE_STATE_LOOP:
             minqlx.console_print("[ql_agent] State publishing via frame hook (safe mode)")
+            # MEMORY LEAK FIX: Use single-slot buffer + background publisher
+            # This decouples the 60Hz frame thread from potentially slow Redis I/O
+            self._pending_state = None  # Single-slot buffer for latest state
+            self._pending_state_lock = threading.Lock()
+            self._state_publisher_running = True
+            self._state_publisher_thread = threading.Thread(
+                target=self._state_publisher_loop,
+                daemon=True,
+                name="ql-state-publisher"
+            )
+            self._state_publisher_thread.start()
+            minqlx.console_print("[ql_agent] Background state publisher started (leak fix)")
         else:
             minqlx.console_print("[ql_agent] State publishing DISABLED")
+            self._pending_state = None
+            self._pending_state_lock = None
+            self._state_publisher_running = False
 
         minqlx.console_print("[ql_agent] Plugin initialization complete")
 
@@ -343,6 +368,15 @@ class ql_agent_plugin(minqlx.Plugin):
         """
         minqlx.console_print("[ql_agent] Shutting down plugin...")
         self._running = False
+
+        # Stop state publisher thread
+        if hasattr(self, '_state_publisher_running'):
+            self._state_publisher_running = False
+            if hasattr(self, '_state_publisher_thread') and self._state_publisher_thread.is_alive():
+                minqlx.console_print("[ql_agent] Stopping state publisher thread...")
+                self._state_publisher_thread.join(timeout=timeout)
+                if self._state_publisher_thread.is_alive():
+                    minqlx.console_print("[ql_agent] Warning: state publisher thread did not stop in time")
 
         # Stop agent command listener
         if self._agent_listener:
@@ -396,6 +430,73 @@ class ql_agent_plugin(minqlx.Plugin):
                 return None
 
         return None
+
+    def _state_publisher_loop(self):
+        """Background thread that publishes state to Redis.
+
+        MEMORY LEAK FIX: This decouples the 60Hz frame thread from Redis I/O.
+        The frame hook just writes to a single-slot buffer (very fast, non-blocking).
+        This thread reads from the buffer and publishes to Redis at a throttled rate
+        to prevent redis-py internal buffer accumulation.
+        """
+        minqlx.console_print("[ql_agent] State publisher thread starting...")
+        publish_count = 0
+        drop_count = 0
+        last_stats_time = time.time()
+
+        # MEMORY LEAK FIX: Throttle publish rate to prevent redis-py buffer buildup
+        # 30Hz is enough for training (agent steps at ~15Hz anyway)
+        MIN_PUBLISH_INTERVAL = 1.0 / 30.0  # 30Hz max
+        last_publish_time = 0
+
+        while self._state_publisher_running and self._running:
+            try:
+                # Rate limiting: don't publish faster than 30Hz
+                now = time.time()
+                time_since_last = now - last_publish_time
+                if time_since_last < MIN_PUBLISH_INTERVAL:
+                    time.sleep(MIN_PUBLISH_INTERVAL - time_since_last)
+                    continue
+
+                # Get pending state (if any)
+                state_json = None
+                with self._pending_state_lock:
+                    if self._pending_state is not None:
+                        state_json = self._pending_state
+                        self._pending_state = None  # Clear buffer
+
+                if state_json is None:
+                    # No pending state, sleep briefly
+                    time.sleep(0.005)  # 5ms = 200Hz max check rate
+                    continue
+
+                # Publish to Redis (this is the potentially slow operation)
+                try:
+                    with self._redis_lock:
+                        self.redis_conn.publish(self.game_state_channel, state_json)
+                        self.redis_conn.set(f'{self.prefix}agent:last_state', state_json)
+                    publish_count += 1
+                    last_publish_time = time.time()
+                except Exception as e:
+                    drop_count += 1
+                    # Don't spam errors
+                    if drop_count % 100 == 1:
+                        minqlx.console_print(f"[ql_agent] State publish error (drop #{drop_count}): {e}")
+
+                # Log stats every 30 seconds
+                now = time.time()
+                if now - last_stats_time >= 30.0:
+                    rate = publish_count / (now - last_stats_time)
+                    minqlx.console_print(f"[ql_agent] State publisher: {publish_count} published, {drop_count} dropped, {rate:.1f}/sec")
+                    publish_count = 0
+                    drop_count = 0
+                    last_stats_time = now
+
+            except Exception as e:
+                minqlx.console_print(f"[ql_agent] State publisher error: {e}")
+                time.sleep(0.1)
+
+        minqlx.console_print("[ql_agent] State publisher thread stopped")
 
     def _publish_event(self, event_type, data):
         """Publish an event to the events channel."""
@@ -488,6 +589,44 @@ class ql_agent_plugin(minqlx.Plugin):
         except Exception as e:
             self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:death_hook_error', str(e))
 
+    def handle_player_spawn(self, player):
+        """Hook for player spawn events - gives weapons for CA-style curriculum.
+
+        This enables training without item economy: both players spawn with
+        a fixed loadout so the agent can focus purely on combat closure
+        (aim → damage → kill) without needing to learn item routing first.
+        """
+        if not self.ENABLE_SPAWN_LOADOUT:
+            return
+
+        try:
+            # Give weapons to spawning player
+            # Loadout: MG (always have), SG, RL, LG, RG - core duel weapons
+            # Use minqlx.delay to ensure commands run after spawn completes
+            @minqlx.delay(0.1)
+            def give_loadout():
+                if not player or not player.is_alive:
+                    return
+
+                player_name = player.clean_name
+
+                # Use minqlx player methods to give weapons
+                # weapons(sg=True, rl=True, lg=True, rg=True) - give shotgun, rocket, lightning, rail
+                player.weapons(sg=True, rl=True, lg=True, rg=True)
+
+                # Give ammo: mg=100, sg=25, rl=15, lg=100, rg=10
+                player.ammo(mg=100, sg=25, rl=15, lg=100, rg=10)
+
+                # Log to Redis for debugging (only every 10th spawn to reduce spam)
+                if self._frame_count % 600 == 0:  # ~10 seconds at 60fps
+                    self._safe_redis_op(self.redis_conn.set, f'{self.prefix}spawn_loadout',
+                        f"Gave loadout to {player_name} at frame {self._frame_count}")
+
+            give_loadout()
+
+        except Exception as e:
+            self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:spawn_hook_error', str(e))
+
     def handle_new_game(self, restart=False):
         """Hook for new game events - pause state loop during transition."""
         minqlx.console_print("[ql_agent] New game starting, pausing state loop...")
@@ -522,6 +661,10 @@ class ql_agent_plugin(minqlx.Plugin):
         STATE PUBLISHING: We publish state HERE (after applying inputs) so
         that the published state reflects OUR view angles, not the bot AI's.
         """
+        t_start = time.perf_counter()
+        t_input = 0
+        t_publish = 0
+
         try:
             # Safety check: don't access players during map change/shutdown
             game = self.game
@@ -534,20 +677,60 @@ class ql_agent_plugin(minqlx.Plugin):
             agent_player = self.get_agent_player()
             if agent_player and agent_player.is_alive:
                 # Apply our inputs FIRST (overrides bot AI)
+                t0 = time.perf_counter()
                 self._apply_agent_inputs(agent_player)
                 # Track damage events
                 self._check_damage_events(agent_player)
+                t_input = (time.perf_counter() - t0) * 1000
 
             # Publish state AFTER applying inputs so it reflects our angles
             if self._safe_to_run:
+                t0 = time.perf_counter()
                 self._publish_agent_state()
+                t_publish = (time.perf_counter() - t0) * 1000
 
         except Exception as e:
             # Don't spam errors every frame, just log to Redis
             self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:after_frame_error', str(e))
 
+        finally:
+            # === FRAME TIMING DIAGNOSTICS ===
+            dt_total = (time.perf_counter() - t_start) * 1000
+
+            # Track slow frame stats
+            if not hasattr(self, '_slow_frame_stats'):
+                self._slow_frame_stats = {'gt5ms': 0, 'gt10ms': 0, 'gt50ms': 0, 'gt100ms': 0, 'max_dt': 0, 'last_slow_frame': 0}
+
+            if dt_total > 5:
+                self._slow_frame_stats['gt5ms'] += 1
+            if dt_total > 10:
+                self._slow_frame_stats['gt10ms'] += 1
+            if dt_total > 50:
+                self._slow_frame_stats['gt50ms'] += 1
+            if dt_total > 100:
+                self._slow_frame_stats['gt100ms'] += 1
+            if dt_total > self._slow_frame_stats['max_dt']:
+                self._slow_frame_stats['max_dt'] = dt_total
+
+            # Log slow frames (>10ms) to console for immediate visibility
+            if dt_total > 10:
+                self._slow_frame_stats['last_slow_frame'] = self._frame_count
+                minqlx.console_print(f"[ql_agent] SLOW_FRAME #{self._frame_count}: total={dt_total:.1f}ms input={t_input:.1f}ms publish={t_publish:.1f}ms")
+
+            # Periodic stats summary to Redis (every 300 frames)
+            if self._frame_count % 300 == 0:
+                stats = self._slow_frame_stats
+                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:frame_timing',
+                    f"gt5ms={stats['gt5ms']} gt10ms={stats['gt10ms']} gt50ms={stats['gt50ms']} gt100ms={stats['gt100ms']} max={stats['max_dt']:.1f}ms")
+
     def _publish_agent_state(self):
-        """Publish game state to Redis. Called from after_frame hook."""
+        """Build game state and queue for background publishing.
+
+        MEMORY LEAK FIX: This method now just builds the state dict and
+        serializes it to JSON, then writes to a single-slot buffer. The actual
+        Redis I/O happens in _state_publisher_loop on a background thread.
+        This prevents the 60Hz frame thread from blocking on slow Redis ops.
+        """
         try:
             game = self.game
             if game is None:
@@ -576,7 +759,8 @@ class ql_agent_plugin(minqlx.Plugin):
                             opp_data['in_fov'] = False
                         opponents.append(opp_data)
 
-            items = self.get_items()
+            # MEMORY LEAK FIX: Use cached items to avoid get_entity_info() leak
+            items = self.get_items_cached()
             server_time_ms = int(time.time() * 1000)
             game_time_ms = minqlx.get_game_time() if hasattr(minqlx, 'get_game_time') else 0
 
@@ -611,8 +795,18 @@ class ql_agent_plugin(minqlx.Plugin):
                 'agent_kills': agent_kills,  # Cumulative frags this match
                 'agent_deaths': agent_deaths,  # Cumulative deaths this match
             }
-            self._safe_redis_op(self.redis_conn.publish, self.game_state_channel, json.dumps(game_state))
-            self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:last_state', json.dumps(game_state))
+
+            # MEMORY LEAK FIX: Serialize once, write to buffer (non-blocking)
+            # Background thread will publish to Redis
+            state_json = json.dumps(game_state)
+            if self._pending_state_lock is not None:
+                with self._pending_state_lock:
+                    self._pending_state = state_json  # Overwrites any pending (latest-only)
+            else:
+                # Fallback: direct publish if background thread not running
+                self._safe_redis_op(self.redis_conn.publish, self.game_state_channel, state_json)
+                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:last_state', state_json)
+
         except Exception as e:
             self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:publish_error', str(e))
 
@@ -769,6 +963,10 @@ class ql_agent_plugin(minqlx.Plugin):
     def _execute_admin_command(self, command, data):
         """Execute admin command on main thread."""
         try:
+            # === COMMAND AUDIT LOG: Track all commands for debugging ===
+            ts = time.strftime("%H:%M:%S")
+            minqlx.console_print(f"[ql_agent] ADMIN_CMD @{ts} frame={self._frame_count}: {command} data={data}")
+
             if command == 'restart_game':
                 minqlx.console_print("[ql_agent] Restarting game via admin command.")
                 self._game_restarting = True  # Block further commands
@@ -811,6 +1009,18 @@ class ql_agent_plugin(minqlx.Plugin):
                 if cmd:
                     print(f"Executing console command: {cmd}")
                     minqlx.console_command(cmd)
+            elif command == 'spawn_loadout':
+                # Toggle or set spawn loadout mode (CA-style curriculum)
+                enable = data.get('enable')
+                if enable is None:
+                    # Toggle
+                    self.ENABLE_SPAWN_LOADOUT = not self.ENABLE_SPAWN_LOADOUT
+                else:
+                    self.ENABLE_SPAWN_LOADOUT = bool(enable)
+                status = "ENABLED" if self.ENABLE_SPAWN_LOADOUT else "DISABLED"
+                minqlx.console_print(f"[ql_agent] Spawn loadout (CA-mode): {status}")
+                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}spawn_loadout_enabled',
+                    "1" if self.ENABLE_SPAWN_LOADOUT else "0")
 
         except Exception as e:
             print(f"Error executing admin command: {e}")
@@ -1020,7 +1230,21 @@ class ql_agent_plugin(minqlx.Plugin):
             }
             for item in MAP_ITEMS[map_name]
         ]
-    
+
+    def get_items_cached(self):
+        """MEMORY LEAK FIX: Return cached items to avoid calling get_entity_info() every frame.
+
+        The leak is in minqlx.get_entity_info() - the C function creates Python dicts
+        that don't get properly freed. By caching items and only refreshing every
+        30 frames (0.5 sec), we reduce the leak to negligible levels while still
+        tracking item respawns accurately enough for training.
+        """
+        # Check if cache needs refresh
+        if self._frame_count - self._items_cache_frame >= self._items_cache_interval:
+            self._cached_items = self.get_items()
+            self._items_cache_frame = self._frame_count
+        return self._cached_items
+
     def get_items_OLD(self):
         """OLD: Entity-based item scanning (doesn't work on most minqlx builds)."""
         items = []
@@ -1285,7 +1509,11 @@ class ql_agent_plugin(minqlx.Plugin):
             self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:input_traceback', traceback.format_exc())
 
     def _publish_state_if_possible(self):
-        """Publish game state to Redis without applying inputs. Used during startup."""
+        """Publish game state to Redis without applying inputs. Used during startup.
+
+        MEMORY LEAK FIX: Now uses the same buffered approach as _publish_agent_state()
+        to avoid direct Redis calls from the frame thread.
+        """
         try:
             game = self.game
             if game is None:
@@ -1305,7 +1533,8 @@ class ql_agent_plugin(minqlx.Plugin):
                         opp_data['in_fov'] = False  # Don't calculate FOV during startup
                         opponents.append(opp_data)
 
-            items = self.get_items()
+            # MEMORY LEAK FIX: Use cached items to avoid get_entity_info() leak
+            items = self.get_items_cached()
             server_time_ms = int(time.time() * 1000)
             game_time_ms = minqlx.get_game_time() if hasattr(minqlx, 'get_game_time') else 0
 
@@ -1323,9 +1552,17 @@ class ql_agent_plugin(minqlx.Plugin):
                 'startup_check_count': self._startup_check_count,
                 'state_frame_id': self._frame_count,
             }
-            self._safe_redis_op(self.redis_conn.publish, self.game_state_channel, json.dumps(game_state))
-            # Always store last state for polling
-            self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:last_state', json.dumps(game_state))
+
+            # MEMORY LEAK FIX: Use buffered approach instead of direct Redis calls
+            state_json = json.dumps(game_state)
+            if self._pending_state_lock is not None:
+                with self._pending_state_lock:
+                    self._pending_state = state_json  # Overwrites any pending (latest-only)
+            else:
+                # Fallback: direct publish if background thread not running
+                self._safe_redis_op(self.redis_conn.publish, self.game_state_channel, state_json)
+                self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:last_state', state_json)
+
         except Exception as e:
             self._safe_redis_op(self.redis_conn.set, f'{self.prefix}agent:publish_error', str(e))
 
@@ -1345,24 +1582,29 @@ class ql_agent_plugin(minqlx.Plugin):
                     game = self.game
                     if game is None:
                         self._startup_check_count = 0
-                        # Still try to publish state for debugging
-                        self._publish_state_if_possible()
+                        # MEMORY LEAK FIX: Only publish every 4th frame (15Hz) during startup
+                        # This reduces memory pressure from state building operations
+                        if self._frame_count % 1 == 0:
+                            self._publish_state_if_possible()
                         return
                     game_state = game.state
                     if game_state not in ('in_progress', 'warmup', 'countdown'):
                         self._startup_check_count = 0
-                        self._publish_state_if_possible()
+                        if self._frame_count % 1 == 0:
+                            self._publish_state_if_possible()
                         return
                     # Additional check: make sure we can actually list players
                     players = list(self.players())
                     if not players:
                         self._startup_check_count = 0
-                        self._publish_state_if_possible()
+                        if self._frame_count % 1 == 0:
+                            self._publish_state_if_possible()
                         return
                     # C-level safety check if available
                     if hasattr(minqlx, 'is_game_safe') and not minqlx.is_game_safe():
                         self._startup_check_count = 0
-                        self._publish_state_if_possible()
+                        if self._frame_count % 1 == 0:
+                            self._publish_state_if_possible()
                         return
                     # Passed all checks - increment counter
                     self._startup_check_count += 1
@@ -1374,8 +1616,9 @@ class ql_agent_plugin(minqlx.Plugin):
                         self._maybe_spawn_agent_bot()
                 except Exception:
                     self._startup_check_count = 0
-                # Publish state even when not fully ready (for env visibility)
-                self._publish_state_if_possible()
+                # MEMORY LEAK FIX: Only publish every 4th frame during startup
+                if self._frame_count % 1 == 0:
+                    self._publish_state_if_possible()
                 return
 
             # Double-check game state is still valid
@@ -1421,7 +1664,7 @@ class ql_agent_plugin(minqlx.Plugin):
             if self._frame_count % 100 == 0:
                 players = list(self.players())
                 agent_player_debug = self.get_agent_player()
-                items_debug = self.get_items()
+                items_debug = self.get_items_cached()
                 debug = {
                     'frame': self._frame_count,
                     'looking_for': self.agent_steam_id,

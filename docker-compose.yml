@@ -36,7 +36,7 @@ services:
       context: .
       dockerfile: Dockerfile.server
     image: quakelive-agent:latest
-    container_name: ql-server
+    container_name: ql-server-0
     ports:
       - "27961:27960/udp"
       - "27961:27960/tcp"
@@ -52,11 +52,16 @@ services:
       # ===== ISOLATION TESTING FLAGS =====
       # Set to "1" to enable, "0" to disable
       - QL_AGENT_ENABLE=1
+      # Re-enabled after implementing background publisher memory leak fix
       - QL_AGENT_ENABLE_STATE_LOOP=1
       - QL_AGENT_ENABLE_SET_USERCMD=1
       - QL_AGENT_ENABLE_EVENTS=1
       - QL_AGENT_ENABLE_ADMIN=1
       - QL_AGENT_ENABLE_COMMANDS=1
+      # Environment ID for namespacing (must match training env_id)
+      - QLX_ENV_ID=0
+      # Spawn loadout for CA-style curriculum
+      - QL_SPAWN_LOADOUT=1
     healthcheck:
       test: ["CMD", "/healthcheck.sh"]
       interval: 30s
@@ -66,11 +71,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # Increased from 512M due to memory leak causing OOM kills every ~9 minutes
+          # TODO: Find and fix memory leak in minqlx/ql_agent_plugin
+          memory: 2G
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    # DEBUG: Changed to on-failure so exit(0) won't auto-restart
+    # This helps debug why the server is exiting cleanly
+    restart: "on-failure:3"
 
 networks:
   default:
