@@ -1232,14 +1232,13 @@ class ql_agent_plugin(minqlx.Plugin):
         ]
 
     def get_items_cached(self):
-        """MEMORY LEAK FIX: Return cached items to avoid calling get_entity_info() every frame.
+        """Return cached items to reduce entity scanning overhead.
 
-        The leak is in minqlx.get_entity_info() - the C function creates Python dicts
-        that don't get properly freed. By caching items and only refreshing every
-        30 frames (0.5 sec), we reduce the leak to negligible levels while still
-        tracking item respawns accurately enough for training.
+        Note: The original memory leak in minqlx.get_entity_info() has been fixed
+        (missing Py_DECREF calls). Caching is retained as an optimization to reduce
+        CPU overhead from scanning 1024 entities every frame.
         """
-        # Check if cache needs refresh
+        # Refresh cache at configured interval (default: 60 frames = 1 sec)
         if self._frame_count - self._items_cache_frame >= self._items_cache_interval:
             self._cached_items = self.get_items()
             self._items_cache_frame = self._frame_count

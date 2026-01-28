@@ -2018,26 +2018,49 @@ static PyObject* PyMinqlx_GetEntityInfo(PyObject* self, PyObject* args) {
 
     // Build a Python Dictionary
     PyObject *dict = PyDict_New();
+    if (!dict) return NULL;
+
+    // MEMORY LEAK FIX: PyDict_SetItemString increments refcount, so we must
+    // Py_DECREF the value after setting to avoid leaking the original reference.
+    PyObject *tmp;
 
     // 1. Classname (e.g., "item_health_mega")
     if (ent->classname) {
-        PyDict_SetItemString(dict, "classname", PyUnicode_FromString(ent->classname));
+        tmp = PyUnicode_FromString(ent->classname);
     } else {
-        PyDict_SetItemString(dict, "classname", PyUnicode_FromString(""));
+        tmp = PyUnicode_FromString("");
     }
+    PyDict_SetItemString(dict, "classname", tmp);
+    Py_DECREF(tmp);
 
     // 2. Position (Origin)
     PyObject *pos = PyDict_New();
-    PyDict_SetItemString(pos, "x", PyFloat_FromDouble(ent->r.currentOrigin[0]));
-    PyDict_SetItemString(pos, "y", PyFloat_FromDouble(ent->r.currentOrigin[1]));
-    PyDict_SetItemString(pos, "z", PyFloat_FromDouble(ent->r.currentOrigin[2]));
+    if (!pos) { Py_DECREF(dict); return NULL; }
+
+    tmp = PyFloat_FromDouble(ent->r.currentOrigin[0]);
+    PyDict_SetItemString(pos, "x", tmp);
+    Py_DECREF(tmp);
+
+    tmp = PyFloat_FromDouble(ent->r.currentOrigin[1]);
+    PyDict_SetItemString(pos, "y", tmp);
+    Py_DECREF(tmp);
+
+    tmp = PyFloat_FromDouble(ent->r.currentOrigin[2]);
+    PyDict_SetItemString(pos, "z", tmp);
+    Py_DECREF(tmp);
+
     PyDict_SetItemString(dict, "position", pos);
+    Py_DECREF(pos);
 
     // 3. Next Think (This is the Respawn Timer!)
-    PyDict_SetItemString(dict, "next_think", PyLong_FromLong(ent->nextthink));
+    tmp = PyLong_FromLong(ent->nextthink);
+    PyDict_SetItemString(dict, "next_think", tmp);
+    Py_DECREF(tmp);
 
     // 4. Whether entity is currently solid/pickupable
-    PyDict_SetItemString(dict, "in_use", PyBool_FromLong(ent->inuse));
+    tmp = PyBool_FromLong(ent->inuse);
+    PyDict_SetItemString(dict, "in_use", tmp);
+    Py_DECREF(tmp);
 
     return dict;
 }
